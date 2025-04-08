@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Large Model Data (Adjust folder name if different)
+Kokoro-82M/
+
+# Log files
+*.log
+gpu_log.csv
+
+# IDE/Editor specific
+.vscode/
+.idea/
