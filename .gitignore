@@ -18,7 +18,6 @@ env/
 # IDE/Editor specific files (Optional, uncomment if needed)
 .vscode/
 .idea/
-
 # OS generated files
 .DS_Store
 Thumbs.db
