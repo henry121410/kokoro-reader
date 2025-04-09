@@ -1,76 +1,26 @@
+#!/usr/bin/env python
 import time
 import threading
+import sys  # Keep sys for potential exit
+import traceback
+import torch
+import gc
+import argparse
+import numpy as np
+import sounddevice as sd
 import pyperclip
 from pynput import keyboard
-import sounddevice as sd
-from kokoro import KPipeline, KModel
-import pystray
-from PIL import Image
-import numpy as np
-import sys
-import os
-import re  # Added for sentence splitting
-import traceback  # Add traceback for better error logging
-import torch
-import gc  # Import the garbage collection module
-import argparse
+import pystray  # type: ignore
+from PIL import Image, ImageDraw  # For default icon
+import os  # <<< Added import os
 
-# --- Configuration ---
-# Define modifiers, target character, and target virtual key code
-HOTKEY_MODIFIERS = {keyboard.Key.ctrl}
-HOTKEY_CHAR = r"\`"  # Target character is backtick (use raw string)
-HOTKEY_VK = 192  # VK Code for Backtick/Tilde key
+# Assuming kokoro is installed and accessible
+from kokoro.pipeline import KPipeline
 
-# --- Available Voices Data Structure --- (Simplified for v1.1-zh)
-AVAILABLE_VOICES = {
-    "a": {  # American English
-        "name": "American English",
-        "voices": {
-            # Use full path for the voice used in the test
-            "D:/kokoro-reader/Kokoro-82M/voice/af_maple.pt": "Female Maple (New v1.1 Local)",
-            # Keep others as placeholders or add their paths too if available
-            # "D:/kokoro-reader/Kokoro-82M/voice/af_sol.pt": "Female Sol (New v1.1 Local)",
-            "af_sol": "Female Sol (New v1.1)",  # Placeholder name
-            "af_heart": "Female Heart (v1.0)",  # Placeholder name, likely non-existent in v1.1
-        },
-    },
-    "b": {  # British English
-        "name": "British English",
-        "voices": {
-            # Placeholder
-            "bf_vale": "Female Vale (New v1.1 Older)",
-            "bf_emma": "Female Emma (v1.0)",  # May or may not exist
-        },
-    },
-    "z": {  # Mandarin Chinese
-        "name": "Mandarin Chinese",
-        "voices": {
-            # Use the full path for the manually downloaded voice
-            "D:/kokoro-reader/Kokoro-82M/voice/zf_001.pt": "Female 001 (v1.1 Local)",
-            "D:/kokoro-reader/Kokoro-82M/voice/zm_010.pt": "Male 010 (v1.1 Local)",
-            # Keep others as placeholders for now, or add their full paths if available
-            # 'D:/kokoro-reader/Kokoro-82M/voice/zm_010.pt': 'Male 010 (v1.1 Local)',
-            "zm_yunjian": "Male Yunjian (v1.0)",  # May or may not exist
-        },
-    },
-}
+# from kokoro.kmodel import KModel # Original line causing error
+from kokoro import KModel  # Try importing directly from the main library
 
-# --- Speed Options ---
-AVAILABLE_SPEEDS = {
-    0.75: "0.75x",
-    1.0: "1.0x (Default)",
-    1.25: "1.25x",
-    1.5: "1.5x",
-}
-DEFAULT_SPEED = 1.0
-COPY_FAILED_MESSAGE = "Copy failed."  # Message to speak on failure
-# CHUNK_SIZE = 70 # Split text into chunks of this size - Commented out
-
-DEFAULT_LANG_CODE = "z"  # Keep Chinese default
-# Set default voice to the full path of the manually downloaded file
-DEFAULT_VOICE = "D:/kokoro-reader/Kokoro-82M/voice/zf_001.pt"
-SAMPLE_RATE = 24000
-ICON_FILENAME = "icon.png"  # Placeholder icon name
+import config  # Import the new config file
 
 # --- Global Variables ---
 current_keys = set()
@@ -79,18 +29,26 @@ key_controller = keyboard.Controller()
 kokoro_pipeline = None
 keyboard_listener = None
 tray_icon = None
-current_lang_code = DEFAULT_LANG_CODE
-current_voice = DEFAULT_VOICE
-current_speed = DEFAULT_SPEED
-last_spoken_text = None  # Stores last *successfully completed* spoken text segment
-stop_playback_flag = threading.Event()  # Flag to signal playback interruption
+# Initialize global state from config defaults
+current_lang_code = config.DEFAULT_LANG_CODE
+current_voice = config.DEFAULT_VOICE
+current_speed = config.DEFAULT_SPEED
+last_spoken_text = None
+stop_playback_flag = threading.Event()
 
-# --- Configuration --- #
-MAX_CHUNK_CHARS = 180  # Maximum characters per chunk before forcing a split
+
+# --- Removed Constant Definitions ---
+# DEFAULT_LANG_CODE, DEFAULT_VOICE, DEFAULT_SPEED
+# AVAILABLE_VOICES, AVAILABLE_SPEEDS
+# HOTKEY_MODIFIERS, HOTKEY_CHAR, HOTKEY_VK
+# SAMPLE_RATE
+# MAX_CHUNK_CHARS
+# COPY_FAILED_MESSAGE
+# --- Were moved to config.py ---
 
 
 # --- Initialization (Modified to use repo_id and add CUDA checks) ---
-def initialize_tts(lang_code=DEFAULT_LANG_CODE, voice_name=DEFAULT_VOICE):
+def initialize_tts(lang_code=config.DEFAULT_LANG_CODE, voice_name=config.DEFAULT_VOICE):
     """Initialize or re-initialize the Kokoro TTS pipeline with more verbose CUDA checks."""
     global kokoro_pipeline
     print(
@@ -264,7 +222,7 @@ def speak_text(text):
         # print("Skipping empty text segment.")
         return True  # Consider empty text a success in the sequence
 
-    is_error_message = text == COPY_FAILED_MESSAGE
+    is_error_message = text == config.COPY_FAILED_MESSAGE
     text_to_log = text[:50].replace("\n", " ") + ("..." if len(text) > 50 else "")
 
     if is_error_message:
@@ -337,13 +295,13 @@ def speak_text(text):
             return False  # Indicate stopped
 
         print(
-            f"   Playing audio ({len(full_audio)/SAMPLE_RATE:.2f}s) for: '{text_to_log}' - [speak_text]"
+            f"   Playing audio ({len(full_audio)/config.SAMPLE_RATE:.2f}s) for: '{text_to_log}' - [speak_text]"
         )
-        sd.play(full_audio, SAMPLE_RATE)
+        sd.play(full_audio, config.SAMPLE_RATE)
 
         # --- Wait loop with stop check ---
         playback_start_time = time.time()
-        playback_duration = len(full_audio) / SAMPLE_RATE
+        playback_duration = len(full_audio) / config.SAMPLE_RATE
         while sd.get_stream().active:  # Check if stream is active
             if stop_playback_flag.is_set():
                 print(
@@ -419,7 +377,7 @@ def speak_sentences_sequentially(full_text):
 
         segment_index += 1
         # Determine the end boundary for the potential chunk
-        end_boundary = min(current_pos + MAX_CHUNK_CHARS, len(full_text))
+        end_boundary = min(current_pos + config.MAX_CHUNK_CHARS, len(full_text))
         potential_chunk = full_text[current_pos:end_boundary]
 
         actual_chunk = ""
@@ -427,7 +385,7 @@ def speak_sentences_sequentially(full_text):
 
         # If the potential chunk IS the rest of the text AND its length is <= MAX_CHUNK_CHARS
         is_last_part = end_boundary == len(full_text)
-        if is_last_part and len(potential_chunk) <= MAX_CHUNK_CHARS:
+        if is_last_part and len(potential_chunk) <= config.MAX_CHUNK_CHARS:
             actual_chunk = potential_chunk
             next_pos = len(full_text)  # Ensure loop terminates
             print(
@@ -539,7 +497,6 @@ def process_selected_text():
         key_controller.press("c")
         time.sleep(0.03)
         key_controller.release("c")
-        time.sleep(0.03)
         key_controller.release(keyboard.Key.ctrl)
         time.sleep(0.1)  # Main wait for clipboard update
 
@@ -590,7 +547,7 @@ def process_selected_text():
                 tts_thread.start()
             else:
                 # Speak failure message
-                text_to_process = COPY_FAILED_MESSAGE
+                text_to_process = config.COPY_FAILED_MESSAGE
                 print("   Nothing spoken previously, speaking failure message.")
                 tts_thread = threading.Thread(
                     target=speak_text, args=(text_to_process,), daemon=True
@@ -630,18 +587,18 @@ def on_press(key):
 
         # --- Robust Hotkey Check using Modifiers, Character, OR VK Code --- #
         # 1. Check if all required modifiers are currently held
-        modifiers_held = HOTKEY_MODIFIERS.issubset(current_keys)
+        modifiers_held = config.HOTKEY_MODIFIERS.issubset(current_keys)
 
         # 2. Check if the key JUST pressed matches either the target character OR the target VK code
         key_char = getattr(key, "char", None)
         key_vk = getattr(key, "vk", None)
-        is_target_key = key_char == HOTKEY_CHAR or key_vk == HOTKEY_VK
+        is_target_key = key_char == config.HOTKEY_CHAR or key_vk == config.HOTKEY_VK
 
         # 3. Ensure no *other* modifiers are accidentally held
         other_modifiers_pressed = any(
             m in current_keys
             for m in (keyboard.Key.shift, keyboard.Key.alt, keyboard.Key.cmd)
-            if m not in HOTKEY_MODIFIERS
+            if m not in config.HOTKEY_MODIFIERS
         )
 
         # 4. Trigger only if required modifiers are held, target key matches (char or vk), and no other modifiers are pressed
@@ -650,7 +607,7 @@ def on_press(key):
             if processing_lock.acquire(blocking=False):
                 processing_lock.release()
                 print(
-                    f"Hotkey triggered: {HOTKEY_MODIFIERS} + Char('{HOTKEY_CHAR}')/VK({HOTKEY_VK})"
+                    f"Hotkey triggered: {config.HOTKEY_MODIFIERS} + Char('{config.HOTKEY_CHAR}')/VK({config.HOTKEY_VK})"
                 )
                 process_thread = threading.Thread(
                     target=process_selected_text, daemon=True
@@ -689,35 +646,79 @@ def on_release(key):
 
 
 # --- System Tray Functions ---
-def set_voice(lang_code, voice_name):
+def set_voice(icon, item):
     """Callback function when a voice is selected from the menu."""
-    global current_lang_code, current_voice, kokoro_pipeline
-    if current_lang_code != lang_code or current_voice != voice_name:
-        print(f"Switching voice to [{lang_code}] {voice_name}")
+    global current_voice, current_lang_code, kokoro_pipeline  # Need lang code too
 
-        # Re-initialize TTS for the new language/voice
-        # Run in a separate thread to avoid blocking the UI/tray
+    selected_voice_id = item.text  # Get the voice ID (e.g., "zf_001") from item text
+    new_voice_path = None
+
+    # Find the path corresponding to the selected voice ID in the config
+    if (
+        current_lang_code in config.AVAILABLE_VOICES
+        and "voices" in config.AVAILABLE_VOICES[current_lang_code]
+        and selected_voice_id in config.AVAILABLE_VOICES[current_lang_code]["voices"]
+    ):
+        new_voice_path = config.AVAILABLE_VOICES[current_lang_code]["voices"][
+            selected_voice_id
+        ]
+    else:
+        print(
+            f"Error: Could not find path for selected voice ID '{selected_voice_id}' in config."
+        )
+        return
+
+    # Check if voice actually changed
+    if current_voice != new_voice_path:
+        print(
+            f"Switching voice to [{current_lang_code}] {selected_voice_id} ({new_voice_path})"
+        )
+
+        # Re-initialize TTS in a background thread
         def reinit_task():
-            if initialize_tts(lang_code, voice_name):
-                global current_lang_code, current_voice
-                current_lang_code = lang_code
-                current_voice = voice_name
-                # Update tray tooltip or menu check state if needed (optional)
+            if initialize_tts(
+                current_lang_code, new_voice_path
+            ):  # Use current_lang_code
+                global current_voice  # Only update voice path on success
+                current_voice = new_voice_path
                 update_menu()
             else:
                 print("Failed to switch voice. TTS might be unavailable.")
+                # Optionally revert current_voice or show error state in menu
 
         threading.Thread(target=reinit_task, daemon=True).start()
+    # else: # No change, do nothing
+    #     pass
 
 
-def set_speed(speed_value):
+def set_speed(icon, item):
     """Callback function when a speed is selected."""
     global current_speed
-    if current_speed != speed_value:
-        print(f"Setting speed to {speed_value}x")
-        current_speed = speed_value
+
+    selected_speed_text = item.text  # Get the text like "1.0x (Default)"
+    new_speed_value = None
+
+    # Find the float value corresponding to the selected text in config
+    for speed_val, speed_text in config.AVAILABLE_SPEEDS.items():
+        if speed_text == selected_speed_text:
+            new_speed_value = speed_val
+            break
+
+    if new_speed_value is None:
+        print(
+            f"Error: Could not find speed value for selected text '{selected_speed_text}' in config."
+        )
+        return
+
+    # Check if speed actually changed
+    # Use a small tolerance for float comparison
+    if abs(current_speed - new_speed_value) > 0.01:
+        print(f"Setting speed to {new_speed_value}x")
+        current_speed = new_speed_value
         # No need to re-initialize TTS for speed changes
         update_menu()
+    # else: # No change
+    #     pass
 
 
 def exit_action(icon, item):
@@ -857,7 +858,7 @@ def test_length_limit(
                         )
                 else:
                     full_audio = np.concatenate(generated_audio_segments)
-                    audio_duration = len(full_audio) / SAMPLE_RATE
+                    audio_duration = len(full_audio) / config.SAMPLE_RATE
 
                     # --- ADDED PLAYBACK --- #
                     try:
@@ -866,7 +867,7 @@ def test_length_limit(
                         )
                         # Ensure sounddevice is available and working
                         if sd is not None:
-                            sd.play(full_audio, SAMPLE_RATE)
+                            sd.play(full_audio, config.SAMPLE_RATE)
                             # Wait loop with stop check
                             playback_start_time = time.time()
                             while sd.get_stream().active:
@@ -971,169 +972,78 @@ def test_length_limit(
 
 
 def create_menu():
-    """Creates the menu items for the system tray icon, showing only local .pt voices."""
+    """Creates the dynamic system tray menu."""
     menu_items = []
 
-    # --- Language Selection (Grouped by Language) ---
-    lang_submenus = {}
-    for lang_code, lang_info in AVAILABLE_VOICES.items():
-        lang_name = lang_info["name"]
-        voice_submenu_items = []  # Store MenuItem objects for voices here
-        for voice_id, voice_desc in lang_info["voices"].items():
-            # --- Filter: Only add voices with a .pt path --- #
-            is_local_file = isinstance(voice_id, str) and voice_id.endswith(".pt")
-            if is_local_file:
-                filename = voice_id.split("/")[-1]
-                menu_text = f"{voice_desc} ({filename})"
+    # --- Language Selection (Simplified - Shows current, no switch option) ---
+    # We can add language switching back later if needed.
+    current_lang_name = "Unknown Lang"
+    if current_lang_code in config.AVAILABLE_VOICES:
+        current_lang_name = config.AVAILABLE_VOICES[current_lang_code].get(
+            "name", current_lang_code
+        )
+    menu_items.append(
+        pystray.MenuItem(f"Language: {current_lang_name}", None, enabled=False)
+    )
+    menu_items.append(pystray.Menu.SEPARATOR)
 
-                # --- Use Nested Functions for Callbacks --- #
-                # Need to capture loop variables using default args in nested functions too
-                def create_voice_action(lc=lang_code, vc=voice_id):
-                    def action(icon, item):
-                        set_voice(lc, vc)
-
-                    return action
-
-                def create_voice_checked(lc=lang_code, vc=voice_id):
-                    def checked(item):
-                        return current_lang_code == lc and current_voice == vc
-
-                    return checked
-
-                # -------------------------------------------- #
-
-                item = pystray.MenuItem(
-                    menu_text,
-                    create_voice_action(),  # Call the factory to get the actual callback
-                    checked=create_voice_checked(),  # Call the factory for the checked callback
-                    radio=True,
+    # --- Voice Submenu (Corrected for new config structure AND removed value arg) ---
+    voice_menu_items = []
+    if current_lang_code in config.AVAILABLE_VOICES:
+        lang_data = config.AVAILABLE_VOICES[current_lang_code]
+        if "voices" in lang_data and isinstance(lang_data["voices"], dict):
+            if lang_data["voices"]:
+                for voice_id, voice_path in lang_data["voices"].items():
+                    voice_menu_items.append(
+                        pystray.MenuItem(
+                            voice_id,  # Text is the voice ID
+                            set_voice,  # Callback function
+                            checked=lambda item, path=voice_path: current_voice == path,
+                            radio=True,
+                            # value=voice_path # <<< Removed unsupported 'value' argument
+                        )
+                    )
+            else:
+                # voices dict exists but is empty
+                voice_menu_items.append(
+                    pystray.MenuItem("(No voices defined)", None, enabled=False)
                 )
-                voice_submenu_items.append(item)
-            # ----------------------------------------------------- #
-
-        # Only create a language submenu if it has valid (local) voices
-        if voice_submenu_items:
-            lang_submenu = pystray.Menu(
-                *voice_submenu_items
-            )  # Menu containing voice items
-            lang_submenus[lang_name] = lang_submenu
-
-    # --- Corrected Submenu Structure --- #
-    if lang_submenus:
-        language_menu_items = []
-        for lang_name, lang_submenu_obj in lang_submenus.items():
-            language_menu_items.append(
-                pystray.MenuItem(f"{lang_name} Voices", lang_submenu_obj)
+        else:
+            # "voices" key is missing or not a dictionary
+            voice_menu_items.append(
+                pystray.MenuItem("(Voice config error)", None, enabled=False)
             )
+    else:
+        # current_lang_code not found in AVAILABLE_VOICES
+        voice_menu_items.append(
+            pystray.MenuItem("(Lang not configured)", None, enabled=False)
+        )
 
-        select_voice_submenu = pystray.Menu(*language_menu_items)
-        menu_items.append(pystray.MenuItem("Select Voice", select_voice_submenu))
-        menu_items.append(pystray.Menu.SEPARATOR)
-    # ------------------------------------ #
+    # Only add the submenu if there are items (prevents empty menu error maybe?)
+    if voice_menu_items:
+        menu_items.append(pystray.MenuItem("Voice", pystray.Menu(*voice_menu_items)))
+    else:
+        # Fallback if something went wrong
+        menu_items.append(pystray.MenuItem("Voice: Error", None, enabled=False))
+    # ---------------------------------------------------------- #
 
-    # --- Speed Selection --- #
-    speed_submenu_items = []
-    for speed_val, speed_desc in AVAILABLE_SPEEDS.items():
-        # --- Use Nested Functions for Callbacks --- #
-        def create_speed_action(s=speed_val):
-            def action(icon, item):
-                set_speed(s)
-
-            return action
-
-        def create_speed_checked(s=speed_val):
-            def checked(item):
-                return abs(current_speed - s) < 0.01
-
-            return checked
-
-        # -------------------------------------------- #
-
-        speed_submenu_items.append(
+    # --- Speed Submenu (Corrected - removed value arg) ---
+    speed_menu_items = []
+    for speed_val, speed_text in config.AVAILABLE_SPEEDS.items():
+        speed_menu_items.append(
             pystray.MenuItem(
-                speed_desc,
-                create_speed_action(),  # Call factory
-                checked=create_speed_checked(),  # Call factory
+                speed_text,  # Text is the display string (e.g., "1.0x (Default)")
+                set_speed,  # Callback uses item.text to find value
+                checked=lambda item, val=speed_val: current_speed == val,
                 radio=True,
+                # value=speed_val, # <<< Removed unsupported 'value' argument
             )
         )
-    if speed_submenu_items:
-        speed_menu = pystray.Menu(*speed_submenu_items)
-        menu_items.append(pystray.MenuItem("Playback Speed", speed_menu))
-        menu_items.append(pystray.Menu.SEPARATOR)
-
-    # --- Test Length Limit Menu Items --- #
-    menu_items.append(pystray.Menu.SEPARATOR)  # Separator before tests
-
-    # --- English Test --- #
-    en_test_lang_code = "a"
-    en_test_voice_path = "D:/kokoro-reader/Kokoro-82M/voice/af_maple.pt"
-    en_test_base_text = "hello world "
-
-    def run_test_action_english(icon, item):
-        print(
-            f"Starting length limit test (English: {en_test_voice_path.split('/')[-1]}) in background thread..."
-        )
-        if not os.path.exists(en_test_voice_path):
-            print(f"ERROR: Test voice file not found: {en_test_voice_path}")
-            return
-        if kokoro_pipeline is None or kokoro_pipeline.lang_code != en_test_lang_code:
-            print(
-                f"WARNING: Current TTS is not set to English ('{en_test_lang_code}')."
-            )
-            print(
-                f"         Please switch voice to an English one first via the menu for accurate testing."
-            )
-            # Let the test function handle the final check
-        threading.Thread(
-            target=test_length_limit,
-            args=(en_test_lang_code, en_test_voice_path),
-            kwargs={"base_text": en_test_base_text, "end_len": 600},
-            daemon=True,
-        ).start()
-
-    menu_items.append(
-        pystray.MenuItem("Test Length Limit (English)", run_test_action_english)
-    )
-
-    # --- Chinese Test --- #
-    zh_test_lang_code = "z"
-    zh_test_voice_path = (
-        "D:/kokoro-reader/Kokoro-82M/voice/zf_001.pt"  # Use female voice for test
-    )
-    zh_test_base_text = "你好世界"  # Chinese base text
-
-    def run_test_action_chinese(icon, item):
-        print(
-            f"Starting length limit test (Chinese: {zh_test_voice_path.split('/')[-1]}) in background thread..."
-        )
-        if not os.path.exists(zh_test_voice_path):
-            print(f"ERROR: Test voice file not found: {zh_test_voice_path}")
-            return
-        if kokoro_pipeline is None or kokoro_pipeline.lang_code != zh_test_lang_code:
-            print(
-                f"WARNING: Current TTS is not set to Chinese ('{zh_test_lang_code}')."
-            )
-            print(
-                f"         Please switch voice to a Chinese one first via the menu for accurate testing."
-            )
-            # Let the test function handle the final check
-        threading.Thread(
-            target=test_length_limit,
-            args=(zh_test_lang_code, zh_test_voice_path),
-            kwargs={
-                "base_text": zh_test_base_text,
-                "end_len": 600,
-            },  # Keep end_len consistent for now
-            daemon=True,
-        ).start()
-
-    menu_items.append(
-        pystray.MenuItem("Test Length Limit (Chinese)", run_test_action_chinese)
-    )
-    # -------------------------------------- #
-
-    menu_items.append(pystray.Menu.SEPARATOR)  # Separator after tests
+    if speed_menu_items:
+        menu_items.append(pystray.MenuItem("Speed", pystray.Menu(*speed_menu_items)))
+    else:
+        menu_items.append(pystray.MenuItem("Speed: Error", None, enabled=False))
+    # ---------------------------------------------------- #
 
     # --- Replay Last --- #
     replay_menu_text = (
@@ -1155,24 +1065,26 @@ def create_menu():
                 target=speak_text, args=(last_spoken_text,), daemon=True
             ).start()
 
+    menu_items.append(pystray.Menu.SEPARATOR)
     menu_items.append(
         pystray.MenuItem(
             replay_menu_text, replay_action_func, enabled=bool(last_spoken_text)
         )
     )
-    menu_items.append(pystray.Menu.SEPARATOR)
+    # ------------------- #
 
-    # --- Quit --- #
-    # exit_action is already defined correctly
-    menu_items.append(pystray.MenuItem("Quit", exit_action))
+    # --- Exit --- #
+    menu_items.append(pystray.Menu.SEPARATOR)
+    menu_items.append(pystray.MenuItem("Exit", exit_action))
+    # ------------ #
 
     return pystray.Menu(*menu_items)
 
 
 def update_menu():
-    """Updates the system tray menu by recreating it."""
-    if tray_icon and tray_icon.visible:
-        tray_icon.menu = create_menu()  # Rebuild the menu entirely
+    """Updates the tray icon's menu dynamically."""
+    if tray_icon:
+        tray_icon.menu = create_menu()
 
 
 def setup_tray():
@@ -1181,12 +1093,12 @@ def setup_tray():
     try:
         # Attempt to load an icon file (replace with your actual icon)
         # Needs a 64x64 png usually works well
-        icon_path = ICON_FILENAME
+        icon_path = config.ICON_FILENAME
         if os.path.exists(icon_path):
             image = Image.open(icon_path)
             print(f"Loaded icon from {icon_path}")
         else:
-            print(f"Icon file '{ICON_FILENAME}' not found. Using default icon.")
+            print(f"Icon file '{config.ICON_FILENAME}' not found. Using default icon.")
             # Create a simple default image if icon file not found
             width = 64
             height = 64
@@ -1214,40 +1126,38 @@ def setup_tray():
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser(description="Kokoro Reader TTS Application")
-    # --- Add argument definitions --- #
     parser.add_argument(
         "-l",
         "--lang_code",
         type=str,
-        default=DEFAULT_LANG_CODE,
-        choices=AVAILABLE_VOICES.keys(),
-        help=f"Language code to use (e.g., {list(AVAILABLE_VOICES.keys())}). Default: {DEFAULT_LANG_CODE}",
+        default=config.DEFAULT_LANG_CODE,
+        choices=config.AVAILABLE_VOICES.keys(),
+        help=f"Language code to use (e.g., {list(config.AVAILABLE_VOICES.keys())}). Default: {config.DEFAULT_LANG_CODE}",
     )
-    # Note: Voice path validation is complex via choices, rely on initialize_tts error handling
     parser.add_argument(
         "-v",
         "--voice",
         type=str,
-        default=DEFAULT_VOICE,
-        help=f"Full path to the .pt voice file. Default: {DEFAULT_VOICE}",
+        default=config.DEFAULT_VOICE,
+        help=f"Full path to the .pt voice file. Default: {config.DEFAULT_VOICE}",
     )
     parser.add_argument(
         "-s",
         "--speed",
         type=float,
-        default=DEFAULT_SPEED,
-        choices=AVAILABLE_SPEEDS.keys(),
-        help=f"Playback speed (e.g., {list(AVAILABLE_SPEEDS.keys())}). Default: {DEFAULT_SPEED}",
+        default=config.DEFAULT_SPEED,
+        choices=config.AVAILABLE_SPEEDS.keys(),
+        help=f"Playback speed (e.g., {list(config.AVAILABLE_SPEEDS.keys())}). Default: {config.DEFAULT_SPEED}",
     )
-    # -------------------------------- #
     args = parser.parse_args()
 
+    # Update global state from potentially overridden args
     current_lang_code = args.lang_code
     current_voice = args.voice
     current_speed = args.speed
 
     print("Starting Kokoro Reader Application...")
-    # Initialize TTS
+    # Initialize TTS using current state
     init_success = initialize_tts(lang_code=current_lang_code, voice_name=current_voice)
 
     # --- Add GC call after successful initialization --- #
@@ -1264,21 +1174,19 @@ if __name__ == "__main__":
     # Start the keyboard listener in a separate thread
     if kokoro_pipeline:  # Check if pipeline is valid after potential init failure
         print(
-            f"Starting hotkey listener ({HOTKEY_MODIFIERS} + Char('{HOTKEY_CHAR}')/VK({HOTKEY_VK}))..."
+            f"Starting hotkey listener ({config.HOTKEY_MODIFIERS} + Char('{config.HOTKEY_CHAR}')/VK({config.HOTKEY_VK}))..."
         )
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.start()
+        # Update listener started message to use config
+        modifier_names = " + ".join(
+            str(k).split(".")[-1] for k in config.HOTKEY_MODIFIERS
+        )
         print(
-            f"Listener started. Press {' + '.join(str(k) for k in HOTKEY_MODIFIERS)} + '{HOTKEY_CHAR}' key after selecting text."
+            f"Listener started. Press {modifier_names} + '{config.HOTKEY_CHAR}' key after selecting text."
         )
 
-    # Setup and run the system tray icon in the main thread
-    # This will block until the icon is stopped (e.g., by Exit menu)
-    setup_tray()
-
-    # Cleanup after tray icon stops
-    print("System tray icon stopped. Exiting application...")
-    # Listener thread is daemon, should exit automatically
-    # Any other cleanup can go here
-
-    print("Kokoro Reader Application stopped.")
+        # Setup and run the system tray icon in the main thread
+        setup_tray()
+    else:
+        print("Exiting due to TTS initialization failure.")
