@@ -21,11 +21,12 @@ from kokoro.pipeline import KPipeline
 from kokoro import KModel  # Try importing directly from the main library
 
 import config  # Import the new config file
+import clipboard_handler  # <<< Import the new module
 
 # --- Global Variables ---
 current_keys = set()
 processing_lock = threading.Lock()
-key_controller = keyboard.Controller()
+# key_controller = keyboard.Controller() # <<< Removed global controller
 kokoro_pipeline = None
 keyboard_listener = None
 tray_icon = None
@@ -468,59 +469,37 @@ def speak_sentences_sequentially(full_text):
     # Clear the flag? Let process_selected_text handle it for safety.
 
 
-# --- Hotkey Processing (Modified for interruption and refined logic) ---
+# --- Hotkey Processing (Modified to use clipboard_handler) ---
 def process_selected_text():
-    """Handles the hotkey trigger, clipboard operations, and initiates TTS, including interruption."""
-    global stop_playback_flag, last_spoken_text  # Include flag and last text
+    """Handles the hotkey trigger, clipboard operations via handler, and initiates TTS."""
+    global stop_playback_flag, last_spoken_text
 
     if not processing_lock.acquire(blocking=False):
         print("Already processing. Ignoring concurrent hotkey trigger.")
         return
 
-    print("\n--- New Hotkey Trigger Detected ---")  # Add newline for clarity
-    # 1. Signal any ongoing playback to stop
+    print("\n--- New Hotkey Trigger Detected ---")
     print("   Signalling previous playback to stop...")
     stop_playback_flag.set()
-    # Increase delay slightly to allow system/audio to potentially settle after stop signal
-    time.sleep(0.15)  # Increased from 0.08 to 0.15
+    time.sleep(0.15)
 
-    original_clipboard_content = pyperclip.paste()
-    text_to_process = None
-    newly_copied_text = None
-
+    # --- Call the handler to get text --- #
+    newly_copied_text = None  # Initialize
     try:
-        # 2. Attempt copy (Clear flag *before* simulation)
-        stop_playback_flag.clear()  # Prepare for potential new playback
-        print("   Simulating Ctrl+C (Attempt 1 with delays)...")
-        key_controller.press(keyboard.Key.ctrl)
-        time.sleep(0.03)
-        key_controller.press("c")
-        time.sleep(0.03)
-        key_controller.release("c")
-        key_controller.release(keyboard.Key.ctrl)
-        time.sleep(0.1)  # Main wait for clipboard update
+        # Clear flag before attempting copy
+        stop_playback_flag.clear()
+        print("   Attempting to get selected text via clipboard handler...")
+        newly_copied_text = clipboard_handler.get_selected_text()
+        # The handler now contains the print statements for success/retry/failure
+    except Exception as e:
+        # Catch potential errors calling the handler itself (though unlikely)
+        print(f"Error calling clipboard handler: {type(e).__name__} - {e}")
+        traceback.print_exc()
+    # ----------------------------------- #
 
-        current_clipboard = pyperclip.paste()
-
-        if current_clipboard and current_clipboard != original_clipboard_content:
-            print("   Got text from clipboard on Attempt 1.")
-            newly_copied_text = current_clipboard
-        else:
-            # Retry Logic
-            print("   Clipboard unchanged on Attempt 1. Retrying...")
-            time.sleep(0.20)  # Wait longer before retry read
-            # Optional: Re-simulate Ctrl+C here if first read fails often
-            current_clipboard = pyperclip.paste()  # Read again
-
-            if current_clipboard and current_clipboard != original_clipboard_content:
-                print("   Got text on Retry.")
-                newly_copied_text = current_clipboard
-            else:
-                print("   Clipboard content still unchanged or empty after retry.")
-                # Fallback logic uses last_spoken_text (last *completed* segment)
-
-        # 3. Decide what to speak and launch thread
-        # --- Ensure flag is clear before starting new thread ---
+    # --- Decide what to speak based on handler result --- #
+    try:
+        # Ensure flag is clear before starting new thread
         stop_playback_flag.clear()
 
         if newly_copied_text:
@@ -528,25 +507,21 @@ def process_selected_text():
             print(
                 f"   Processing newly copied text (Length: {len(text_to_process)}): {text_to_process[:60]}..."
             )
-            # Start sequential speaking in a thread
             seq_thread = threading.Thread(
                 target=speak_sentences_sequentially,
                 args=(text_to_process,),
                 daemon=True,
             )
             seq_thread.start()
-        else:  # Copy failed or yielded nothing new
+        else:  # Copy failed or yielded nothing new (handler returned None)
             if last_spoken_text:
-                # Repeat last *completed* segment
                 text_to_process = last_spoken_text
                 print(f"   Repeating last completed segment: {text_to_process[:60]}...")
-                # Speak directly as it's a single segment
                 tts_thread = threading.Thread(
                     target=speak_text, args=(text_to_process,), daemon=True
                 )
                 tts_thread.start()
             else:
-                # Speak failure message
                 text_to_process = config.COPY_FAILED_MESSAGE
                 print("   Nothing spoken previously, speaking failure message.")
                 tts_thread = threading.Thread(
@@ -555,15 +530,13 @@ def process_selected_text():
                 tts_thread.start()
 
     except Exception as e:
-        print(f"Error in hotkey processing: {type(e).__name__} - {e}")
-        traceback.print_exc()  # Print full traceback for debugging
+        print(f"Error in post-clipboard processing: {type(e).__name__} - {e}")
+        traceback.print_exc()
     finally:
         # Ensure flag is cleared in case of exception before starting thread
         stop_playback_flag.clear()
         processing_lock.release()
-        # Attempt explicit garbage collection
         collected_count = gc.collect()
-        # print(f"--- Hotkey processing finished (GC collected: {collected_count}) ---") # Optional: Log GC count
         print("--- Hotkey processing finished ---")
 
 
