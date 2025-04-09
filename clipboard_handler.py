@@ -6,7 +6,7 @@ from pynput import keyboard
 import traceback
 
 # import logging # Revert logging
-# import config # Remove config import for this version
+import config  # <<< Add import config
 
 # Initialize the keyboard controller once when the module is imported
 try:
