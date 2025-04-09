@@ -10,8 +10,6 @@ import numpy as np
 import sounddevice as sd
 import pyperclip
 from pynput import keyboard
-import pystray  # type: ignore
-from PIL import Image, ImageDraw  # For default icon
 import os  # <<< Added import os
 
 # Assuming kokoro is installed and accessible
@@ -21,13 +19,14 @@ import config  # Import the new config file
 import clipboard_handler  # <<< Import the new module
 import hotkey_listener  # <<< Import the new module
 import audio_player  # <<< Import the new module
+import tray_app  # <<< Import the new module
 
 # --- Global Variables ---
 # current_keys = set() # <<< Removed global current_keys
 processing_lock = threading.Lock()  # Keep the lock here, pass it to listener
 kokoro_pipeline = None
 # keyboard_listener = None # <<< Listener object managed within hotkey_listener module now
-tray_icon = None
+# tray_icon = None # <<< Removed
 # Initialize global state from config defaults
 current_lang_code = config.DEFAULT_LANG_CODE
 current_voice = config.DEFAULT_VOICE
@@ -276,91 +275,17 @@ def process_selected_text():
         print("--- Hotkey processing finished ---")
 
 
-# --- System Tray Functions ---
-def set_voice(icon, item):
-    """Callback function when a voice is selected from the menu."""
-    global current_voice, current_lang_code, kokoro_pipeline  # Need lang code too
-
-    selected_voice_id = item.text  # Get the voice ID (e.g., "zf_001") from item text
-    new_voice_path = None
-
-    # Find the path corresponding to the selected voice ID in the config
-    if (
-        current_lang_code in config.AVAILABLE_VOICES
-        and "voices" in config.AVAILABLE_VOICES[current_lang_code]
-        and selected_voice_id in config.AVAILABLE_VOICES[current_lang_code]["voices"]
-    ):
-        new_voice_path = config.AVAILABLE_VOICES[current_lang_code]["voices"][
-            selected_voice_id
-        ]
-    else:
-        print(
-            f"Error: Could not find path for selected voice ID '{selected_voice_id}' in config."
-        )
-        return
-
-    # Check if voice actually changed
-    if current_voice != new_voice_path:
-        print(
-            f"Switching voice to [{current_lang_code}] {selected_voice_id} ({new_voice_path})"
-        )
-
-        # Re-initialize TTS in a background thread
-        def reinit_task():
-            if initialize_tts(
-                current_lang_code, new_voice_path
-            ):  # Use current_lang_code
-                global current_voice  # Only update voice path on success
-                current_voice = new_voice_path
-                update_menu()
-            else:
-                print("Failed to switch voice. TTS might be unavailable.")
-                # Optionally revert current_voice or show error state in menu
-
-        threading.Thread(target=reinit_task, daemon=True).start()
-    # else: # No change, do nothing
-    #     pass
+# --- System Tray Functions (REMOVED) ---
+# def set_voice(icon, item): ...
+# def set_speed(icon, item): ...
+# def exit_action(icon, item): ...
+# def create_menu(): ...
+# def update_menu(): ...
+# def setup_tray(): ...
+# --- Moved and adapted to tray_app.py ---
 
 
-def set_speed(icon, item):
-    """Callback function when a speed is selected."""
-    global current_speed
-
-    selected_speed_text = item.text  # Get the text like "1.0x (Default)"
-    new_speed_value = None
-
-    # Find the float value corresponding to the selected text in config
-    for speed_val, speed_text in config.AVAILABLE_SPEEDS.items():
-        if speed_text == selected_speed_text:
-            new_speed_value = speed_val
-            break
-
-    if new_speed_value is None:
-        print(
-            f"Error: Could not find speed value for selected text '{selected_speed_text}' in config."
-        )
-        return
-
-    # Check if speed actually changed
-    # Use a small tolerance for float comparison
-    if abs(current_speed - new_speed_value) > 0.01:
-        print(f"Setting speed to {new_speed_value}x")
-        current_speed = new_speed_value
-        # No need to re-initialize TTS for speed changes
-        update_menu()
-    # else: # No change
-    #     pass
-
-
-def exit_action(icon, item):
-    print("Exiting application...")
-    hotkey_listener.stop_listener()
-    audio_player.stop_all_playback()
-    if tray_icon:
-        tray_icon.stop()
-
-
-# --- Test Function --- (Modified to handle interruption)
+# --- Test Function (Needs update or removal) ---
 def test_length_limit(
     lang_code,
     voice_path,
@@ -600,149 +525,63 @@ def test_length_limit(
         print("====================================\n")
 
 
-def create_menu():
-    """Creates the dynamic system tray menu."""
-    menu_items = []
+# --- Main Application Logic Functions (Callbacks for tray_app) ---
+def update_tray_menu():
+    """Schedules an update for the tray menu (e.g., after state changes)."""
+    tray_app.schedule_menu_update()
 
-    # --- Language Selection (Simplified - Shows current, no switch option) ---
-    # We can add language switching back later if needed.
-    current_lang_name = "Unknown Lang"
-    if current_lang_code in config.AVAILABLE_VOICES:
-        current_lang_name = config.AVAILABLE_VOICES[current_lang_code].get(
-            "name", current_lang_code
-        )
-    menu_items.append(
-        pystray.MenuItem(f"Language: {current_lang_name}", None, enabled=False)
-    )
-    menu_items.append(pystray.Menu.SEPARATOR)
 
-    # --- Voice Submenu (Corrected for new config structure AND removed value arg) ---
-    voice_menu_items = []
-    if current_lang_code in config.AVAILABLE_VOICES:
-        lang_data = config.AVAILABLE_VOICES[current_lang_code]
-        if "voices" in lang_data and isinstance(lang_data["voices"], dict):
-            if lang_data["voices"]:
-                for voice_id, voice_path in lang_data["voices"].items():
-                    voice_menu_items.append(
-                        pystray.MenuItem(
-                            voice_id,  # Text is the voice ID
-                            set_voice,  # Callback function
-                            checked=lambda item, path=voice_path: current_voice == path,
-                            radio=True,
-                            # value=voice_path # <<< Removed unsupported 'value' argument
-                        )
-                    )
+def handle_set_voice(new_voice_path):
+    """Handles voice change requests from the tray menu."""
+    global current_voice, current_lang_code, kokoro_pipeline
+
+    if current_voice != new_voice_path:
+        print(f"Tray requested switch voice to [{current_lang_code}] {new_voice_path}")
+
+        # Re-initialize TTS in a background thread
+        def reinit_task():
+            if initialize_tts(current_lang_code, new_voice_path):
+                global current_voice  # Only update global on success
+                current_voice = new_voice_path
+                update_tray_menu()  # Update menu to reflect change
             else:
-                # voices dict exists but is empty
-                voice_menu_items.append(
-                    pystray.MenuItem("(No voices defined)", None, enabled=False)
-                )
-        else:
-            # "voices" key is missing or not a dictionary
-            voice_menu_items.append(
-                pystray.MenuItem("(Voice config error)", None, enabled=False)
-            )
-    else:
-        # current_lang_code not found in AVAILABLE_VOICES
-        voice_menu_items.append(
-            pystray.MenuItem("(Lang not configured)", None, enabled=False)
-        )
+                print("Failed to switch voice via tray. TTS might be unavailable.")
 
-    # Only add the submenu if there are items (prevents empty menu error maybe?)
-    if voice_menu_items:
-        menu_items.append(pystray.MenuItem("Voice", pystray.Menu(*voice_menu_items)))
-    else:
-        # Fallback if something went wrong
-        menu_items.append(pystray.MenuItem("Voice: Error", None, enabled=False))
-    # ---------------------------------------------------------- #
+        threading.Thread(target=reinit_task, daemon=True).start()
 
-    # --- Speed Submenu (Corrected - removed value arg) ---
-    speed_menu_items = []
-    for speed_val, speed_text in config.AVAILABLE_SPEEDS.items():
-        speed_menu_items.append(
-            pystray.MenuItem(
-                speed_text,  # Text is the display string (e.g., "1.0x (Default)")
-                set_speed,  # Callback uses item.text to find value
-                checked=lambda item, val=speed_val: current_speed == val,
-                radio=True,
-                # value=speed_val, # <<< Removed unsupported 'value' argument
-            )
-        )
-    if speed_menu_items:
-        menu_items.append(pystray.MenuItem("Speed", pystray.Menu(*speed_menu_items)))
-    else:
-        menu_items.append(pystray.MenuItem("Speed: Error", None, enabled=False))
-    # ---------------------------------------------------- #
 
-    # --- Replay Last (Modified to use audio_player) --- #
-    last_text = audio_player.get_last_spoken_text()
-    replay_menu_text = (
-        f"Replay Last Completed ({len(last_text)} chars)"
-        if last_text
-        else "Replay Last (Nothing Completed)"
-    )
+def handle_set_speed(new_speed_value):
+    """Handles speed change requests from the tray menu."""
+    global current_speed
+    if abs(current_speed - new_speed_value) > 0.01:
+        print(f"Tray set speed to {new_speed_value}x")
+        current_speed = new_speed_value
+        update_tray_menu()
 
-    def replay_action_func(icon, item):
+
+def handle_replay_last():
+    """Handles replay request from the tray menu."""
+    # Need access to pipeline, voice, speed
+    if kokoro_pipeline:
         audio_player.replay_last(kokoro_pipeline, current_voice, current_speed)
-
-    menu_items.append(pystray.Menu.SEPARATOR)
-    menu_items.append(
-        pystray.MenuItem(replay_menu_text, replay_action_func, enabled=bool(last_text))
-    )
-    # -------------------------------------------------- #
-
-    # --- Exit --- #
-    menu_items.append(pystray.Menu.SEPARATOR)
-    menu_items.append(pystray.MenuItem("Exit", exit_action))
-    # ------------ #
-
-    return pystray.Menu(*menu_items)
+    else:
+        print("Cannot replay, TTS pipeline not available.")
 
 
-def update_menu():
-    """Updates the tray icon's menu dynamically."""
-    if tray_icon:
-        tray_icon.menu = create_menu()
+def handle_exit():
+    """Handles exit request from the tray menu."""
+    print("Exit requested via tray menu...")
+    hotkey_listener.stop_listener()
+    audio_player.stop_all_playback()
+    tray_app.stop_tray_app()  # Signal tray app to stop
+    # Main thread should unblock after tray stops
 
 
-def setup_tray():
-    """Sets up and runs the system tray icon."""
-    global tray_icon
-    try:
-        # Attempt to load an icon file (replace with your actual icon)
-        # Needs a 64x64 png usually works well
-        icon_path = config.ICON_FILENAME
-        if os.path.exists(icon_path):
-            image = Image.open(icon_path)
-            print(f"Loaded icon from {icon_path}")
-        else:
-            print(f"Icon file '{config.ICON_FILENAME}' not found. Using default icon.")
-            # Create a simple default image if icon file not found
-            width = 64
-            height = 64
-            color1 = "black"
-            color2 = "white"
-            image = Image.new("RGB", (width, height), color1)
-            # You might want a more sophisticated default icon
-    except Exception as e:
-        print(f"Error loading icon: {e}. Using default icon.")
-        image = Image.new("RGB", (64, 64), "black")  # Fallback default
-
-    tray_icon = pystray.Icon(
-        "kokoro_reader",
-        icon=image,
-        title="Kokoro Reader",
-        menu=create_menu(),  # Dynamically create menu
-    )
-    print("System tray icon setup complete. Running...")
-    # Run the icon loop (this blocks until exit_action stops it)
-    # Needs to run in the main thread or a dedicated non-daemon thread
-    tray_icon.run()
-
-
-# --- Main Execution (Modified) ---
+# --- Main Execution (Modified with timing) ---
 if __name__ == "__main__":
-    # Parse arguments
+    start_time = time.time()
+    print(f"[{start_time:.2f}] Starting application...")
+
     parser = argparse.ArgumentParser(description="Kokoro Reader TTS Application")
     parser.add_argument(
         "-l",
@@ -750,14 +589,14 @@ if __name__ == "__main__":
         type=str,
         default=config.DEFAULT_LANG_CODE,
         choices=config.AVAILABLE_VOICES.keys(),
-        help=f"Language code to use (e.g., {list(config.AVAILABLE_VOICES.keys())}). Default: {config.DEFAULT_LANG_CODE}",
+        help=f"Language code. Default: {config.DEFAULT_LANG_CODE}",
     )
     parser.add_argument(
         "-v",
         "--voice",
         type=str,
         default=config.DEFAULT_VOICE,
-        help=f"Full path to the .pt voice file. Default: {config.DEFAULT_VOICE}",
+        help=f"Voice file path. Default: {config.DEFAULT_VOICE}",
     )
     parser.add_argument(
         "-s",
@@ -765,37 +604,80 @@ if __name__ == "__main__":
         type=float,
         default=config.DEFAULT_SPEED,
         choices=config.AVAILABLE_SPEEDS.keys(),
-        help=f"Playback speed (e.g., {list(config.AVAILABLE_SPEEDS.keys())}). Default: {config.DEFAULT_SPEED}",
+        help=f"Playback speed. Default: {config.DEFAULT_SPEED}",
     )
     args = parser.parse_args()
+    parse_time = time.time()
+    print(f"[{parse_time:.2f}] Args parsed (took {parse_time - start_time:.2f}s)")
 
-    # Update global state from potentially overridden args
     current_lang_code = args.lang_code
     current_voice = args.voice
     current_speed = args.speed
 
-    print("Starting Kokoro Reader Application...")
-    # Initialize TTS using current state
+    print("Starting Kokoro Reader Application...")  # Keep old log for context maybe
+    init_start_time = time.time()
     init_success = initialize_tts(lang_code=current_lang_code, voice_name=current_voice)
+    init_end_time = time.time()
+    print(
+        f"[{init_end_time:.2f}] TTS Initialization finished (took {init_end_time - init_start_time:.2f}s)"
+    )
 
-    # --- Add GC call after successful initialization --- #
     if init_success:
-        print("Initialization successful. Performing garbage collection...")
+        gc_start_time = time.time()
+        print(f"[{gc_start_time:.2f}] Performing garbage collection...")
         gc_init_count = gc.collect()
-        print(f"Garbage collection after init complete (collected: {gc_init_count}).")
-    else:
-        print("TTS Initialization failed. Exiting.")
-        # Optionally, exit here or handle the failure gracefully
-        # sys.exit(1) # Example: exit if initialization fails
-    # ------------------------------------------------- #
+        gc_end_time = time.time()
+        print(
+            f"[{gc_end_time:.2f}] Garbage collection complete (collected: {gc_init_count}, took {gc_end_time - gc_start_time:.2f}s)"
+        )
 
-    # Start the keyboard listener using the new module
-    if kokoro_pipeline:
+        listener_start_time = time.time()
+        print(f"[{listener_start_time:.2f}] Starting hotkey listener...")
         # Pass only the main processing function to the listener module
-        # The lock is now handled solely within process_selected_text
         hotkey_listener.start_listener(process_selected_text)
+        listener_end_time = time.time()
+        print(
+            f"[{listener_end_time:.2f}] Hotkey listener thread started (took {listener_end_time - listener_start_time:.2f}s)"
+        )
 
-        # Setup and run the system tray icon in the main thread
-        setup_tray()
+        tray_start_time = time.time()
+        print(f"[{tray_start_time:.2f}] Starting Tray application...")
+        # Define functions to pass state/actions to tray_app
+        get_voice_state = lambda: current_voice
+        get_speed_state = lambda: current_speed
+        get_last_text_state = lambda: audio_player.get_last_spoken_text()
+
+        try:
+            # This call will block until the tray app is stopped
+            tray_app.start_tray_app(
+                get_current_voice_func=get_voice_state,
+                get_current_speed_func=get_speed_state,
+                get_last_spoken_text_func=get_last_text_state,
+                set_voice_handler_func=handle_set_voice,
+                set_speed_handler_func=handle_set_speed,
+                replay_handler_func=handle_replay_last,
+                exit_handler_func=handle_exit,  # Pass the exit handler
+            )
+            # Code here runs only after tray_app stops normally
+            tray_end_time = time.time()
+            print(
+                f"[{tray_end_time:.2f}] Tray application stopped normally (ran for {tray_end_time - tray_start_time:.2f}s)"
+            )
+
+        except Exception as e:
+            print(f"FATAL: Tray application failed to run: {e}")
+            traceback.print_exc()
+            # Attempt cleanup even on tray error
+            handle_exit()
+        # --------------------------------- #
+
+        print("Main thread unblocked after tray exit.")
+        # Final cleanup actions if needed after everything stops
+
     else:
         print("Exiting due to TTS initialization failure.")
+
+    end_time = time.time()
+    print(
+        f"[{end_time:.2f}] Kokoro Reader application finished (Total time: {end_time - start_time:.2f}s)."
+    )

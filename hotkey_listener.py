@@ -12,10 +12,12 @@ _hotkey_callback = None  # To store the function to call when hotkey is pressed
 
 
 def _on_press(key):
-    """Internal callback for key press events."""
+    """Internal callback for key press events.
+    Allows propagation for all keys now.
+    """
     global current_keys, _hotkey_callback
-    if _stop_event.is_set():  # Stop processing if listener is stopping
-        return False
+    if _stop_event.is_set():
+        return False  # Stop processing if listener is stopping
 
     try:
         # Normalize modifier keys
@@ -31,7 +33,7 @@ def _on_press(key):
         current_keys.add(normalized_key)
         # print(f"DEBUG: Key pressed: {key}, Current keys: {current_keys}") # Keep commented
 
-        # Hotkey Check (using definitions from config.py)
+        # Hotkey Check
         modifiers_held = config.HOTKEY_MODIFIERS.issubset(current_keys)
         key_char = getattr(key, "char", None)
         key_vk = getattr(key, "vk", None)
@@ -47,18 +49,22 @@ def _on_press(key):
                 print(
                     f"Hotkey triggered: {config.HOTKEY_MODIFIERS} + Char('{config.HOTKEY_CHAR}')/VK({config.HOTKEY_VK})"
                 )
-                # --- Execute the callback function directly in a new thread ---
-                # No lock checking needed here anymore
+                # Execute the callback function directly in a new thread
                 callback_thread = threading.Thread(target=_hotkey_callback, daemon=True)
                 callback_thread.start()
-                # ---------------------------------------------------------------
+                # --- REMOVED event suppression ---
+                # print("   -> Suppressing original target key event.")
+                # return False # <<< REMOVED: Allow propagation
+                # --------------------------------- #
             else:
                 print("Warning: Callback not set for hotkey listener.")
+        # If it wasn't the target hotkey combination, allow propagation
 
     except Exception as e:
         print(f"Error in hotkey listener _on_press: {e}")
-        # Consider stopping the listener on error?
-        # return False
+
+    # Allow propagation by default
+    return None
 
 
 def _on_release(key):
@@ -82,6 +88,8 @@ def _on_release(key):
         # print(f"DEBUG: Key released: {key}, Current keys: {current_keys}") # Keep commented
     except Exception as e:
         print(f"Error in hotkey listener _on_release: {e}")
+
+    return None  # Ensure release events propagate
 
 
 def start_listener(callback_function):
