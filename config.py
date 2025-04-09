@@ -12,13 +12,19 @@ IS_SIMULATING_KEYS = (
 # --- Core Settings ---
 DEBUG_MODE = True
 APP_NAME = "Kokoro Reader"
+ICON_FILENAME = "icon.png"
 
-# --- Default Settings ---
-DEFAULT_LANG_CODE = "z"  # Default language ('z' for Chinese)
-# !! 请根据你的实际路径修改下面的默认声音文件路径 !!
-# DEFAULT_VOICE = "D:/kokoro-reader/Kokoro-82M/voice/zf_001.pt"  # Old absolute path
-DEFAULT_VOICE = "./voice/zf_001.pt"  # Use relative path from project root
-DEFAULT_SPEED = 1.3  # Default playback speed
+# --- Language & Voice Settings ---
+# Chinese (zh)
+DEFAULT_LANG_CODE_ZH = "z"  # Default language for Chinese
+DEFAULT_VOICE_ZH = "./voice/zf_001.pt"  # Default Chinese voice file path
+# English (en)
+DEFAULT_LANG_CODE_EN = "en"  # Assumed language code for English
+DEFAULT_VOICE_EN = "./voice/af_maple.pt"  # Default English voice file path
+# General Default (Used by args, can be overridden)
+DEFAULT_LANG_CODE = DEFAULT_LANG_CODE_ZH
+DEFAULT_VOICE = DEFAULT_VOICE_ZH
+DEFAULT_SPEED = 1.3
 
 # --- Available Options ---
 # Structure: { lang_code: { "name": lang_display_name, "voices": { voice_id: voice_path_or_desc } } }
@@ -70,4 +76,11 @@ MAX_CHUNK_CHARS = 180  # Maximum characters per chunk before forcing a split
 # --- Messages ---
 COPY_FAILED_MESSAGE = "Copy failed. Repeating last spoken text or check selection."
 
-ICON_FILENAME = "icon.png"  # Or the actual name of your icon file
+# --- Logging Configuration ---
+# ... (logging settings) ...
+
+# --- TTS Engine (Kokoro) ---
+KOKORO_REPO_ID = "hexgrad/Kokoro-82M-v1.1-zh"
+# Advanced TTS params (usually fixed unless customizing Kokoro behavior)
+AMP_SCALE = 0.8
+INTONATION_SCALE = 1.0
