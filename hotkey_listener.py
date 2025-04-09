@@ -5,6 +5,7 @@ from pynput import keyboard
 import config  # For hotkey definitions
 import time
 import logging
+import traceback
 
 # --- Module-level Variables ---
 current_keys = set()
@@ -25,100 +26,130 @@ cooldown_period = 0.5  # Cooldown in seconds
 
 def _on_press(key):
     """Internal callback for key press events.
-    Allows propagation for all keys now.
+    Detects the configured hotkey based on modifiers and VK code.
     """
-    global current_keys, _hotkey_callback
+    # --- Check simulation flag first --- #
+    if config.IS_SIMULATING_KEYS:
+        print(f"[_on_press] Ignoring simulated key: {key}")
+        return True  # Allow simulated keys to pass through if needed, or return None
+    # ---------------------------------- #
+
+    # --- Add unconditional logging --- #
+    try:
+        print(f"[_on_press] Key received: {key}")  # Use print for immediate visibility
+    except Exception:
+        pass  # Avoid errors if key representation fails
+    # ------------------------------- #
+    global current_keys, _hotkey_callback, _stop_event
     if _stop_event.is_set():
         return False  # Stop processing if listener is stopping
 
     try:
-        # Normalize modifier keys
+        # --- Modified Normalization --- #
         normalized_key = key
-        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
-            normalized_key = keyboard.Key.ctrl
-        elif key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
-            normalized_key = keyboard.Key.shift
-        elif key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
-            normalized_key = keyboard.Key.alt
-        elif key in (keyboard.Key.cmd_l, keyboard.Key.cmd_r):
-            normalized_key = keyboard.Key.cmd
+        if isinstance(key, keyboard.Key):  # Check if it's a special Key object
+            if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+                normalized_key = keyboard.Key.ctrl
+            elif key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
+                normalized_key = keyboard.Key.shift
+            elif key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
+                normalized_key = keyboard.Key.alt
+            elif key in (keyboard.Key.cmd_l, keyboard.Key.cmd_r):
+                normalized_key = keyboard.Key.cmd
+            # Else (like Key.esc, Key.space), normalized_key remains key itself
+        # For KeyCode or char keys, normalized_key remains key itself
         current_keys.add(normalized_key)
-        # print(f"DEBUG: Key pressed: {key}, Current keys: {current_keys}") # Keep commented
+        # ---------------------------- #
 
         # Hotkey Check
         modifiers_held = config.HOTKEY_MODIFIERS.issubset(current_keys)
-        # key_char = getattr(key, "char", None) # No longer needed for checking
         key_vk = getattr(key, "vk", None)
-        # Check ONLY based on VK code now
         is_target_key = key_vk is not None and key_vk == config.HOTKEY_VK
+
+        # --- Reinstate other_modifiers_pressed check --- #
         other_modifiers_pressed = any(
             m in current_keys
             for m in (
                 keyboard.Key.shift,
                 keyboard.Key.alt,
-                keyboard.Key.cmd,
-            )  # Note: Check if this logic is still desired
+                keyboard.Key.cmd,  # Add any other potential modifiers you *don't* want held
+                # Include KeyCode objects if needed, but usually check modifiers
+            )
             if m not in config.HOTKEY_MODIFIERS
+            and m != normalized_key  # Exclude the target key itself
+        )
+        # --------------------------------------------- #
+
+        print(
+            f"  [_on_press Check] current_keys={current_keys}, modifiers_held={modifiers_held}, is_target_key={is_target_key}, other_modifiers_pressed={other_modifiers_pressed}"
         )
 
-        # Use logging instead of print for internal messages if possible, or ensure prints are clearly marked as DEBUG/internal
-        if modifiers_held and is_target_key and not other_modifiers_pressed:
-            if _hotkey_callback:
-                # Construct user-friendly hotkey representation for logging/printing
-                try:
-                    modifier_names = " + ".join(
-                        str(k).split(".")[-1] for k in config.HOTKEY_MODIFIERS
-                    )
-                    try:
-                        target_key_repr = f"'{keyboard.KeyCode(vk=config.HOTKEY_VK).char}' (VK={config.HOTKEY_VK})"
-                    except AttributeError:
-                        target_key_repr = f"VK={config.HOTKEY_VK}"
-                    hotkey_repr = f"{modifier_names} + {target_key_repr}"
-                except Exception:  # Fallback
-                    hotkey_repr = (
-                        f"Modifiers: {config.HOTKEY_MODIFIERS}, VK: {config.HOTKEY_VK}"
-                    )
+        if key_vk == config.HOTKEY_VK:
+            print(f"  [_on_press Debug] Target VK {config.HOTKEY_VK} detected!")
 
-                logging.info(f"Hotkey triggered: {hotkey_repr}")  # Use logging
-                # Execute the callback function directly in a new thread
+        # --- Modified Check with other_modifiers --- #
+        if modifiers_held and is_target_key and not other_modifiers_pressed:
+            print("  [_on_press INFO] Hotkey combination DETECTED")
+            # --- Clear keys AFTER detection --- #
+            print(f"  [_on_press INFO] Clearing current_keys: {current_keys}")
+            current_keys.clear()
+            print(f"  [_on_press INFO] current_keys after clear: {current_keys}")
+            # -------------------------------- #
+            if _hotkey_callback:
+                print(f"  [_on_press INFO] Triggering callback...")
                 callback_thread = threading.Thread(target=_hotkey_callback, daemon=True)
                 callback_thread.start()
-                # --- REMOVED event suppression ---
-                # print("   -> Suppressing original target key event.")
-                # return False # <<< REMOVED: Allow propagation
-                # --------------------------------- #
             else:
-                logging.warning("Callback not set for hotkey listener.")  # Use logging
-        # If it wasn't the target hotkey combination, allow propagation
+                print("  [_on_press WARN] Callback not set!")
+        # ------------------------------------------ #
 
     except Exception as e:
-        logging.error(f"Error in hotkey listener _on_press: {e}")  # Use logging
+        print(f"Error in hotkey listener _on_press: {e}")
+        traceback.print_exc()
 
-    # Allow propagation by default
     return None
 
 
 def _on_release(key):
     """Internal callback for key release events."""
-    global current_keys
+    # --- Check simulation flag first --- #
+    if config.IS_SIMULATING_KEYS:
+        print(f"[_on_release] Ignoring simulated key release: {key}")
+        return True  # Allow simulated keys to pass through if needed, or return None
+    # ---------------------------------- #
+
+    # --- Add unconditional logging --- #
+    try:
+        print(
+            f"[_on_release] Key released: {key}"
+        )  # Use print for immediate visibility
+    except Exception:
+        pass  # Avoid errors if key representation fails
+    # ------------------------------- #
+    global current_keys, _stop_event
     if _stop_event.is_set():
         return False
 
     try:
-        # Normalize modifier keys
+        # --- Use IDENTICAL Normalization as _on_press --- #
         normalized_key = key
-        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
-            normalized_key = keyboard.Key.ctrl
-        elif key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
-            normalized_key = keyboard.Key.shift
-        elif key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
-            normalized_key = keyboard.Key.alt
-        elif key in (keyboard.Key.cmd_l, keyboard.Key.cmd_r):
-            normalized_key = keyboard.Key.cmd
+        if isinstance(key, keyboard.Key):
+            if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+                normalized_key = keyboard.Key.ctrl
+            elif key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
+                normalized_key = keyboard.Key.shift
+            elif key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
+                normalized_key = keyboard.Key.alt
+            elif key in (keyboard.Key.cmd_l, keyboard.Key.cmd_r):
+                normalized_key = keyboard.Key.cmd
+        # --------------------------------------------- #
         current_keys.discard(normalized_key)
-        # print(f"DEBUG: Key released: {key}, Current keys: {current_keys}") # Keep commented
+        print(
+            f"  [_on_release Check] Key {normalized_key} discarded. current_keys={current_keys}"
+        )
     except Exception as e:
         print(f"Error in hotkey listener _on_release: {e}")
+        traceback.print_exc()
 
     return None  # Ensure release events propagate
 
@@ -130,14 +161,15 @@ def start_listener(callback_function):
     Args:
         callback_function: The function to call when the hotkey is detected.
     """
-    global listener_thread, _hotkey_callback
+    global listener_thread, _hotkey_callback, _stop_event
     if listener_thread and listener_thread.is_alive():
         print("Listener already running.")
         return
 
     _hotkey_callback = callback_function
     _stop_event.clear()
-    current_keys.clear()  # Clear keys on start
+    current_keys.clear()  # <<< Ensure clear on start too
+    print("[_start_listener] Initial current_keys cleared.")  # Add log
 
     # Log the hotkey combination being listened for
     try:
