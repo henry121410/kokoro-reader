@@ -6,9 +6,16 @@ import numpy as np
 import sounddevice as sd
 import torch
 import traceback
+import string
 
 # Assuming config.py exists in the same directory or python path
 import config
+
+# Define a more comprehensive set of punctuation and symbols to potentially skip
+# Includes standard punctuation plus common typographic quotes and ellipses
+SKIPPABLE_CHARS = (
+    string.punctuation + "\u201c\u201d\u2018\u2019\u2026"
+)  # Use Unicode escapes
 
 # Module-level state for playback control
 _stop_playback_flag = threading.Event()
@@ -130,13 +137,8 @@ def speak_text(text, pipeline, voice, speed):
 def speak_sequentially(full_text, pipeline, voice, speed):
     """
     Speaks long text by splitting it into chunks and playing them sequentially.
+    Avoids creating chunks containing only punctuation or whitespace.
     Handles interruption.
-
-    Args:
-        full_text (str): The entire text to speak.
-        pipeline: The initialized KPipeline object.
-        voice (str): The voice identifier.
-        speed (float): The playback speed.
     """
     if not pipeline or not full_text:
         print(
@@ -149,8 +151,8 @@ def speak_sequentially(full_text, pipeline, voice, speed):
     )
 
     current_pos = 0
-    delimiters = '。！？….?!"'
     segment_index = 0
+    delimiters = '。！？….?!"'  # Keep the delimiters simple for now
 
     while current_pos < len(full_text):
         if _stop_playback_flag.is_set():
@@ -158,31 +160,54 @@ def speak_sequentially(full_text, pipeline, voice, speed):
             break
 
         segment_index += 1
-        end_boundary = min(current_pos + config.MAX_CHUNK_CHARS, len(full_text))
-        potential_chunk = full_text[current_pos:end_boundary]
-        actual_chunk = ""
-        next_pos = end_boundary
-        best_split_index = -1
-        for i in range(len(potential_chunk) - 1, -1, -1):
-            if potential_chunk[i] in delimiters:
-                best_split_index = current_pos + i + 1
-                break
-        if best_split_index > current_pos and best_split_index <= end_boundary:
-            actual_chunk = full_text[current_pos:best_split_index]
-            next_pos = best_split_index
-        elif end_boundary == len(full_text):
-            actual_chunk = potential_chunk
-            next_pos = len(full_text)
+
+        # --- Modified Chunking Logic --- #
+        max_possible_next_pos = min(
+            current_pos + config.MAX_CHUNK_CHARS, len(full_text)
+        )
+        best_split_after = -1  # Index *after* the best delimiter found so far
+
+        # Search backwards for the last valid delimiter within the max length
+        for i in range(max_possible_next_pos - 1, current_pos - 1, -1):
+            if full_text[i] in delimiters:
+                potential_split_after = i + 1
+                potential_chunk = full_text[current_pos:potential_split_after]
+                chunk_to_check = potential_chunk.strip()
+
+                if chunk_to_check:
+                    # Use the extended SKIPPABLE_CHARS set for checking
+                    is_only_skippable = all(
+                        c in SKIPPABLE_CHARS or c.isspace() for c in chunk_to_check
+                    )
+                    if not is_only_skippable:
+                        best_split_after = potential_split_after
+                        break
+
+        # Determine the actual chunk and next starting position
+        if best_split_after != -1:
+            # Found a valid delimiter split
+            actual_chunk = full_text[current_pos:best_split_after]
+            next_pos = best_split_after
         else:
-            actual_chunk = potential_chunk
-            next_pos = end_boundary
+            # No valid delimiter split found, use hard limit or end of text
+            actual_chunk = full_text[current_pos:max_possible_next_pos]
+            next_pos = max_possible_next_pos
+        # --- End Modified Chunking Logic --- #
 
         chunk_to_speak = actual_chunk.strip()
+
+        # --- Final check using SKIPPABLE_CHARS --- #
+        is_final_check_only_skippable = False
         if chunk_to_speak:
+            is_final_check_only_skippable = all(
+                c in SKIPPABLE_CHARS or c.isspace() for c in chunk_to_speak
+            )
+
+        if chunk_to_speak and not is_final_check_only_skippable:
+            # Speak the chunk
             if _stop_playback_flag.is_set():
                 print("   Sequence interrupted before speaking next chunk. - [player]")
                 break
-
             print(
                 f"      Speaking chunk {segment_index}: '{chunk_to_speak[:40].replace(chr(10), ' ')}...' - [player]"
             )
@@ -197,6 +222,11 @@ def speak_sequentially(full_text, pipeline, voice, speed):
                         f"      Failed to speak segment {segment_index} (error). Stopping sequence. - [player]"
                     )
                 break
+        elif chunk_to_speak:  # It was not empty, but was only skippable chars
+            print(
+                f"   Skipping chunk {segment_index} (only skippable chars): '{chunk_to_speak}'"
+            )
+        # Else: chunk_to_speak was empty after strip(), do nothing
 
         current_pos = next_pos
 

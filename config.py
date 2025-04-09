@@ -1,14 +1,24 @@
 # config.py - Configuration constants for Kokoro Reader
 
+import logging
 from pynput import keyboard
+import os
+
+# --- Shared State Flags (Use with caution!) ---
+IS_SIMULATING_KEYS = (
+    False  # Global flag to indicate if keys are being simulated programmatically
+)
+
+# --- Core Settings ---
+DEBUG_MODE = True
+APP_NAME = "Kokoro Reader"
 
 # --- Default Settings ---
 DEFAULT_LANG_CODE = "z"  # Default language ('z' for Chinese)
 # !! 请根据你的实际路径修改下面的默认声音文件路径 !!
 # DEFAULT_VOICE = "D:/kokoro-reader/Kokoro-82M/voice/zf_001.pt"  # Old absolute path
 DEFAULT_VOICE = "./voice/zf_001.pt"  # Use relative path from project root
-# DEFAULT_SPEED = 1.0  # Default playback speed
-DEFAULT_SPEED = 1.3  # Default playback speed (Adjusted)
+DEFAULT_SPEED = 1.0  # Default playback speed
 
 # --- Available Options ---
 # Structure: { lang_code: { "name": lang_display_name, "voices": { voice_id: voice_path_or_desc } } }
