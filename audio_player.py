@@ -32,82 +32,72 @@ def speak_text(text, pipeline, voice, speed):
     Returns:
         bool: True if playback completed successfully without interruption, False otherwise.
     """
-    global _last_spoken_text  # Allow modification
+    global _last_spoken_text
 
     if not pipeline:
         print("Error (audio_player): TTS pipeline not provided. Skipping.")
         return False
     if not text or not text.strip():
-        return True  # Consider empty text a success
+        return True
 
-    is_error_message = text == config.COPY_FAILED_MESSAGE  # Check against config
-    text_to_log = text[:50].replace("\\n", " ") + ("..." if len(text) > 50 else "")
+    is_error_message = text == config.COPY_FAILED_MESSAGE
+    text_to_log = text[:50].replace("\n", " ") + ("..." if len(text) > 50 else "")
 
-    # --- Check stop flag before generation ---
     if _stop_playback_flag.is_set():
         print(
             f"   Playback interrupted before generation for: '{text_to_log}' - [player]"
         )
         return False
 
-    print(f"   Generating audio for: '{text_to_log}'...")  # Simpler log
-    # DO NOT update last_spoken_text here
+    print(f"   Generating audio for: '{text_to_log}'...")
 
     try:
         all_audio_segments = []
-        generator = pipeline(text, voice=voice, speed=speed)  # Use passed arguments
-        yielded_results_count = 0
+        generator = pipeline(text, voice=voice, speed=speed)
 
         for i, result in enumerate(generator):
-            # --- Check stop flag during generation ---
             if _stop_playback_flag.is_set():
                 print(
                     f"   Playback interrupted during generation yield {i} for: '{text_to_log}' - [player]"
                 )
                 return False
 
-            yielded_results_count += 1
-            audio_segment = None
-            # Simplified audio extraction logic (assuming correct result structure)
             if (
                 hasattr(result, "output")
                 and hasattr(result.output, "audio")
                 and isinstance(result.output.audio, torch.Tensor)
+                and result.output.audio is not None
             ):
-                audio_tensor = result.output.audio
-                if audio_tensor is not None:
-                    audio_segment = audio_tensor.detach().cpu().numpy()
-                    all_audio_segments.append(audio_segment)
+                audio_segment = result.output.audio.detach().cpu().numpy()
+                all_audio_segments.append(audio_segment)
 
         if not all_audio_segments:
             print(
-                f"   TTS generation produced no valid audio for: '{text_to_log}' - [player]"
+                f"   TTS generation produced no audio segments for: '{text_to_log}' - [player]"
             )
             return False
 
         full_audio = np.concatenate(all_audio_segments)
 
-        # --- Check stop flag before playback ---
         if _stop_playback_flag.is_set():
             print(f"   Playback interrupted before playing: '{text_to_log}' - [player]")
             return False
 
+        audio_duration = len(full_audio) / config.SAMPLE_RATE
         print(
-            f"   Playing audio ({len(full_audio)/config.SAMPLE_RATE:.2f}s) for: '{text_to_log}' - [player]"
+            f"   Playing audio ({audio_duration:.2f}s) for: '{text_to_log}' - [player]"
         )
         sd.play(full_audio, config.SAMPLE_RATE)
 
-        # --- Wait loop with stop check ---
         while sd.get_stream().active:
             if _stop_playback_flag.is_set():
                 print(
                     f"   Playback interrupted during playback for: '{text_to_log}' - [player]"
                 )
-                sd.stop()  # Actively stop sounddevice playback
+                sd.stop()
                 return False
             time.sleep(0.05)
 
-        # --- Check flag *after* playback finishes naturally ---
         if _stop_playback_flag.is_set():
             print(
                 f"   Playback stopped by flag just after finishing naturally: '{text_to_log}' - [player]"
@@ -115,7 +105,6 @@ def speak_text(text, pipeline, voice, speed):
             return False
 
         print(f"   Playback finished for: '{text_to_log}' - [player]")
-        # Update last_spoken_text *only* on successful completion and if not error msg
         if not is_error_message:
             _last_spoken_text = text
         return True
@@ -151,7 +140,7 @@ def speak_sequentially(full_text, pipeline, voice, speed):
     """
     if not pipeline or not full_text:
         print(
-            "Error (audio_player): Pipeline not ready or text is empty for sequential speaking."
+            "Error (audio_player): Pipeline not ready or text empty for sequential speaking."
         )
         return
 
@@ -160,11 +149,10 @@ def speak_sequentially(full_text, pipeline, voice, speed):
     )
 
     current_pos = 0
-    delimiters = '。！？….?!"'  # Added quote mark as potential delimiter
+    delimiters = '。！？….?!"'
     segment_index = 0
 
     while current_pos < len(full_text):
-        # --- Check stop flag at start of loop ---
         if _stop_playback_flag.is_set():
             print("   Sequence interrupted by flag at start of loop. - [player]")
             break
@@ -174,27 +162,23 @@ def speak_sequentially(full_text, pipeline, voice, speed):
         potential_chunk = full_text[current_pos:end_boundary]
         actual_chunk = ""
         next_pos = end_boundary
-
-        # Simplified chunking logic (similar to before)
         best_split_index = -1
         for i in range(len(potential_chunk) - 1, -1, -1):
             if potential_chunk[i] in delimiters:
-                best_split_index = current_pos + i + 1  # Split *after* delimiter
+                best_split_index = current_pos + i + 1
                 break
         if best_split_index > current_pos and best_split_index <= end_boundary:
             actual_chunk = full_text[current_pos:best_split_index]
             next_pos = best_split_index
-        elif end_boundary == len(full_text):  # Last part
+        elif end_boundary == len(full_text):
             actual_chunk = potential_chunk
             next_pos = len(full_text)
-        else:  # No suitable delimiter found, take max chunk
+        else:
             actual_chunk = potential_chunk
             next_pos = end_boundary
 
-        # --- Speak the determined chunk ---
         chunk_to_speak = actual_chunk.strip()
         if chunk_to_speak:
-            # --- Check stop flag before speaking chunk ---
             if _stop_playback_flag.is_set():
                 print("   Sequence interrupted before speaking next chunk. - [player]")
                 break
@@ -202,7 +186,6 @@ def speak_sequentially(full_text, pipeline, voice, speed):
             print(
                 f"      Speaking chunk {segment_index}: '{chunk_to_speak[:40].replace(chr(10), ' ')}...' - [player]"
             )
-            # Call the internal speak_text function
             success = speak_text(chunk_to_speak, pipeline, voice, speed)
             if not success:
                 if _stop_playback_flag.is_set():
@@ -213,11 +196,10 @@ def speak_sequentially(full_text, pipeline, voice, speed):
                     print(
                         f"      Failed to speak segment {segment_index} (error). Stopping sequence. - [player]"
                     )
-                break  # Stop processing further chunks
+                break
 
         current_pos = next_pos
 
-    # --- Log sequence completion status ---
     if _stop_playback_flag.is_set():
         print("   Sequence processing stopped due to interruption flag. - [player]")
     elif current_pos >= len(full_text):
@@ -232,12 +214,11 @@ def stop_all_playback():
     """Signals any ongoing playback to stop immediately."""
     print("   Signalling audio player to stop playback...")
     _stop_playback_flag.set()
-    # sd.stop() # Optional immediate stop
+    sd.stop()
 
 
 def clear_stop_flag():
     """Clears the internal stop playback flag."""
-    # print("   Clearing audio player stop flag...") # Optional debug log
     _stop_playback_flag.clear()
 
 
@@ -246,10 +227,9 @@ def replay_last(pipeline, voice, speed):
     global _last_spoken_text
     if _last_spoken_text:
         print(f"Replaying last completed segment: {_last_spoken_text[:60]}...")
-        stop_all_playback()  # Signal any current playback to stop
-        time.sleep(0.08)  # Short pause
-        clear_stop_flag()  # <<< Use the new function here
-        # Speak the last text in a new thread
+        stop_all_playback()
+        time.sleep(0.08)
+        clear_stop_flag()
         threading.Thread(
             target=speak_text,
             args=(_last_spoken_text, pipeline, voice, speed),
@@ -260,6 +240,6 @@ def replay_last(pipeline, voice, speed):
 
 
 def get_last_spoken_text():
-    """Returns the last successfully spoken text segment."""
+    """Returns the text of the last successfully completed segment."""
     global _last_spoken_text
     return _last_spoken_text
