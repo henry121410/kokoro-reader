@@ -20,6 +20,7 @@ from kokoro import KPipeline, KModel
 import config  # Import the new config file
 import clipboard_handler  # <<< Import the new module
 import hotkey_listener  # <<< Import the new module
+import audio_player  # <<< Import the new module
 
 # --- Global Variables ---
 # current_keys = set() # <<< Removed global current_keys
@@ -31,8 +32,6 @@ tray_icon = None
 current_lang_code = config.DEFAULT_LANG_CODE
 current_voice = config.DEFAULT_VOICE
 current_speed = config.DEFAULT_SPEED
-last_spoken_text = None
-stop_playback_flag = threading.Event()
 
 
 # --- Removed Constant Definitions ---
@@ -208,296 +207,29 @@ def initialize_tts(lang_code=config.DEFAULT_LANG_CODE, voice_name=config.DEFAULT
         return False
 
 
-# --- Core TTS and Playback (Modified to handle interruption and update last_spoken_text correctly) ---
-def speak_text(text):
-    """Generate audio for a given text segment and play it. Handles interruption."""
-    global last_spoken_text, stop_playback_flag  # Include stop_playback_flag
-
-    if not kokoro_pipeline:
-        print("TTS engine not initialized or failed. Skipping.")
-        return False
-    if not text or not text.strip():
-        # print("Skipping empty text segment.")
-        return True  # Consider empty text a success in the sequence
-
-    is_error_message = text == config.COPY_FAILED_MESSAGE
-    text_to_log = text[:50].replace("\n", " ") + ("..." if len(text) > 50 else "")
-
-    if is_error_message:
-        print(f"Speaking error message: {text}")
-    else:
-        print(
-            f"Generating audio with [{current_lang_code}] {current_voice.split('/')[-1]} at {current_speed}x speed for: {text_to_log}"
-        )
-        # DO NOT update last_spoken_text here anymore
-
-    # --- Check stop flag before generation ---
-    if stop_playback_flag.is_set():
-        print(
-            f"   Playback interrupted before generation for: '{text_to_log}' - [speak_text]"
-        )
-        return False  # Indicate stopped
-
-    try:
-        all_audio_segments = []
-        generator = kokoro_pipeline(text, voice=current_voice, speed=current_speed)
-        yielded_results_count = 0
-
-        for i, result in enumerate(generator):
-            # --- Check stop flag during generation (if long generation) ---
-            if stop_playback_flag.is_set():
-                print(
-                    f"   Playback interrupted during generation yield {i} for: '{text_to_log}' - [speak_text]"
-                )
-                # Ensure generator is properly closed if possible? Might not be necessary.
-                return False  # Indicate stopped
-
-            yielded_results_count += 1
-            audio_segment = None
-            if (
-                isinstance(result, KPipeline.Result)
-                and hasattr(result, "output")
-                and isinstance(result.output, KModel.Output)
-                and hasattr(result.output, "audio")
-            ):
-                audio_tensor = result.output.audio
-                if audio_tensor is not None and isinstance(audio_tensor, torch.Tensor):
-                    audio_segment = audio_tensor.detach().cpu().numpy()
-                    # print(f"         Got audio segment (shape: {audio_segment.shape}) - [speak_text]") # Less verbose
-                    all_audio_segments.append(audio_segment)
-                # else: # Less verbose
-                # print("         Result contained None or invalid audio tensor. - [speak_text]")
-            # else: # Less verbose
-            # print(f"         Warning: Unexpected result format or missing audio data: {result} - [speak_text]")
-
-        # print(f"   Generator finished. Total items yielded: {yielded_results_count} - [speak_text]") # Less verbose
-
-        if not all_audio_segments:
-            if yielded_results_count == 0:
-                print(
-                    f"TTS generation yielded nothing for: '{text_to_log}' - [speak_text]"
-                )
-            else:
-                print(
-                    f"TTS generation produced no valid audio segments for: '{text_to_log}' - [speak_text]"
-                )
-            return False
-
-        full_audio = np.concatenate(all_audio_segments)
-
-        # --- Check stop flag before playback ---
-        if stop_playback_flag.is_set():
-            print(
-                f"   Playback interrupted before playing: '{text_to_log}' - [speak_text]"
-            )
-            return False  # Indicate stopped
-
-        print(
-            f"   Playing audio ({len(full_audio)/config.SAMPLE_RATE:.2f}s) for: '{text_to_log}' - [speak_text]"
-        )
-        sd.play(full_audio, config.SAMPLE_RATE)
-
-        # --- Wait loop with stop check ---
-        playback_start_time = time.time()
-        playback_duration = len(full_audio) / config.SAMPLE_RATE
-        while sd.get_stream().active:  # Check if stream is active
-            if stop_playback_flag.is_set():
-                print(
-                    f"   Playback interrupted during playback for: '{text_to_log}' - [speak_text]"
-                )
-                sd.stop()  # Actively stop sounddevice playback
-                return False  # Indicate stopped
-            time.sleep(0.05)  # Short sleep to avoid busy-waiting
-            # Optional timeout check (can be added if streams hang)
-            # if time.time() - playback_start_time > playback_duration + 10: # 10 sec buffer
-            #     print(f"   WARN: Playback timeout suspected for: '{text_to_log}'")
-            #     sd.stop()
-            #     return False
-
-        # --- Check flag *after* playback finishes naturally ---
-        # This catches cases where the flag was set right as playback ended.
-        if stop_playback_flag.is_set():
-            print(
-                f"   Playback stopped by flag just after finishing naturally: '{text_to_log}' - [speak_text]"
-            )
-            # sd.stop() # Stop again just in case? Likely redundant.
-            return False  # Still consider it stopped
-
-        print(f"   Playback finished for: '{text_to_log}' - [speak_text]")
-        # Update last_spoken_text *only* on successful completion and if not error msg
-        if not is_error_message:
-            last_spoken_text = text
-        return True  # Indicate success
-
-    except sd.PortAudioError as pae:
-        print(f"Error playing audio (SoundDevice PortAudioError): {pae} - [speak_text]")
-        sd.stop()  # Attempt to stop sounddevice on error
-        return False
-    except RuntimeError as rte:
-        print(
-            f"Error during TTS generation (RuntimeError likely from model): {rte} - [speak_text]"
-        )
-        return False
-    except Exception as e:
-        print(
-            f"Error during TTS or playback for '{text_to_log}': {type(e).__name__} - {e} - [speak_text]"
-        )
-        traceback.print_exc()  # Print stack trace for unexpected errors
-        sd.stop()  # Attempt to stop sounddevice on generic error
-        return False
-    # No finally block needed unless specific cleanup is required
-
-
-# --- Function for sequential speaking (Modified for interruption) ---
-def speak_sentences_sequentially(full_text):
-    """
-    Speaks text, splitting it into chunks intelligently and handling interruption.
-    """
-    global stop_playback_flag  # Include flag
-
-    if not kokoro_pipeline or not full_text:
-        print("TTS Pipeline not ready or text is empty.")
-        return
-
-    print(
-        f"Processing text intelligently (Length: {len(full_text)}): {full_text[:50]}... - [seq]"
-    )
-
-    current_pos = 0
-    delimiters = "。！？….?!"
-    segment_index = 0
-
-    while current_pos < len(full_text):
-        # --- Check stop flag at start of loop ---
-        if stop_playback_flag.is_set():
-            print("   Sequence interrupted by flag at start of loop. - [seq]")
-            break  # Exit the loop
-
-        segment_index += 1
-        # Determine the end boundary for the potential chunk
-        end_boundary = min(current_pos + config.MAX_CHUNK_CHARS, len(full_text))
-        potential_chunk = full_text[current_pos:end_boundary]
-
-        actual_chunk = ""
-        next_pos = end_boundary  # Default next position
-
-        # If the potential chunk IS the rest of the text AND its length is <= MAX_CHUNK_CHARS
-        is_last_part = end_boundary == len(full_text)
-        if is_last_part and len(potential_chunk) <= config.MAX_CHUNK_CHARS:
-            actual_chunk = potential_chunk
-            next_pos = len(full_text)  # Ensure loop terminates
-            print(
-                f"   Segment {segment_index} (Final Short): Taking remaining {len(actual_chunk)} chars."
-            )
-        else:
-            # Need to split or take the max chunk. Find the last suitable delimiter.
-            best_split_index = -1  # Relative to the start of the *original* text
-            # Search backwards within the potential chunk for the last delimiter
-            for i in range(len(potential_chunk) - 1, -1, -1):
-                if potential_chunk[i] in delimiters:
-                    # Store the index relative to the start of full_text
-                    best_split_index = current_pos + i
-                    break
-
-            # Check if a valid split point was found WITHIN the current search range
-            # (Must be after the current position) - this check might be redundant
-            # because we search backwards from end_boundary, but safe to keep.
-            if best_split_index >= current_pos:
-                # Found a delimiter, split here (include the delimiter)
-                chunk_end_pos = best_split_index + 1
-                actual_chunk = full_text[current_pos:chunk_end_pos]
-                next_pos = chunk_end_pos
-                print(
-                    f"   Segment {segment_index}: Splitting at delimiter, chunk length {len(actual_chunk)}."
-                )
-            else:
-                # No suitable delimiter found within the potential chunk.
-                # Take the whole potential chunk (up to MAX_CHUNK_CHARS).
-                actual_chunk = potential_chunk
-                next_pos = end_boundary  # Move position to the end of this hard chunk
-                print(
-                    f"   Segment {segment_index}: No delimiter found, taking max chunk up to {len(actual_chunk)} chars."
-                )
-
-        # --- Speak the determined chunk --- #
-        chunk_to_speak = actual_chunk.strip()
-        if chunk_to_speak:
-            # --- Check stop flag before speaking chunk ---
-            if stop_playback_flag.is_set():
-                print("   Sequence interrupted before speaking next chunk. - [seq]")
-                break  # Exit the loop
-
-            print(
-                f"      Speaking chunk {segment_index}: '{chunk_to_speak[:40].replace(chr(10), ' ')}...' - [seq]"
-            )
-            success = speak_text(
-                chunk_to_speak
-            )  # speak_text now handles its own stop checks
-            if not success:
-                # If speak_text returned False, it could be an error OR an interruption.
-                # Check the flag again to be sure why it failed.
-                if stop_playback_flag.is_set():
-                    print(
-                        f"      Segment {segment_index} interrupted by flag. Stopping sequence. - [seq]"
-                    )
-                else:
-                    # Logged already in speak_text if it was a generation/playback error
-                    print(
-                        f"      Failed to speak segment {segment_index} (error or interruption). Stopping sequence. - [seq]"
-                    )
-                break  # Stop processing further chunks on failure or interruption
-            # Optional pause after speaking a chunk
-            # time.sleep(0.05)
-        else:
-            print(f"   Segment {segment_index}: Skipped empty chunk.")
-
-        current_pos = next_pos  # Move to the next position
-
-    # --- Log sequence completion status ---
-    if stop_playback_flag.is_set():
-        print("   Sequence processing stopped due to interruption flag. - [seq]")
-    elif current_pos >= len(full_text):
-        print("   Finished processing all text successfully. - [seq]")
-    else:
-        print(
-            "   Sequence processing stopped prematurely (likely error in last chunk). - [seq]"
-        )
-
-    # Clear the flag? Let process_selected_text handle it for safety.
-
-
-# --- Hotkey Processing (Modified to use clipboard_handler) ---
+# --- Hotkey Processing (Modified to use audio_player) ---
 def process_selected_text():
-    """Handles the hotkey trigger, clipboard operations via handler, and initiates TTS."""
-    global stop_playback_flag, last_spoken_text
-
+    """Handles the hotkey trigger, clipboard ops, and initiates TTS via audio_player."""
     if not processing_lock.acquire(blocking=False):
         print("Already processing. Ignoring concurrent hotkey trigger.")
         return
 
     print("\n--- New Hotkey Trigger Detected ---")
-    print("   Signalling previous playback to stop...")
-    stop_playback_flag.set()
+    audio_player.stop_all_playback()
     time.sleep(0.15)
 
-    # --- Call the handler to get text --- #
-    newly_copied_text = None  # Initialize
+    newly_copied_text = None
     try:
-        # Clear flag before attempting copy
-        stop_playback_flag.clear()
         print("   Attempting to get selected text via clipboard handler...")
         newly_copied_text = clipboard_handler.get_selected_text()
-        # The handler now contains the print statements for success/retry/failure
     except Exception as e:
-        # Catch potential errors calling the handler itself (though unlikely)
         print(f"Error calling clipboard handler: {type(e).__name__} - {e}")
         traceback.print_exc()
-    # ----------------------------------- #
 
-    # --- Decide what to speak based on handler result --- #
     try:
-        # Ensure flag is clear before starting new thread
-        stop_playback_flag.clear()
+        # --- Clear stop flag before potentially starting new playback --- #
+        audio_player.clear_stop_flag()  # <<< Added call here
+        # ------------------------------------------------------------- #
 
         if newly_copied_text:
             text_to_process = newly_copied_text
@@ -505,33 +237,40 @@ def process_selected_text():
                 f"   Processing newly copied text (Length: {len(text_to_process)}): {text_to_process[:60]}..."
             )
             seq_thread = threading.Thread(
-                target=speak_sentences_sequentially,
-                args=(text_to_process,),
+                target=audio_player.speak_sequentially,
+                args=(text_to_process, kokoro_pipeline, current_voice, current_speed),
                 daemon=True,
             )
             seq_thread.start()
-        else:  # Copy failed or yielded nothing new (handler returned None)
-            if last_spoken_text:
-                text_to_process = last_spoken_text
-                print(f"   Repeating last completed segment: {text_to_process[:60]}...")
-                tts_thread = threading.Thread(
-                    target=speak_text, args=(text_to_process,), daemon=True
+        else:
+            last_text = audio_player.get_last_spoken_text()
+            if last_text:
+                print(f"   Repeating last completed segment: {last_text[:60]}...")
+                replay_thread = threading.Thread(
+                    target=audio_player.replay_last,
+                    args=(kokoro_pipeline, current_voice, current_speed),
+                    daemon=True,
                 )
-                tts_thread.start()
+                replay_thread.start()
             else:
                 text_to_process = config.COPY_FAILED_MESSAGE
                 print("   Nothing spoken previously, speaking failure message.")
-                tts_thread = threading.Thread(
-                    target=speak_text, args=(text_to_process,), daemon=True
+                error_thread = threading.Thread(
+                    target=audio_player.speak_text,
+                    args=(
+                        text_to_process,
+                        kokoro_pipeline,
+                        current_voice,
+                        current_speed,
+                    ),
+                    daemon=True,
                 )
-                tts_thread.start()
+                error_thread.start()
 
     except Exception as e:
         print(f"Error in post-clipboard processing: {type(e).__name__} - {e}")
         traceback.print_exc()
     finally:
-        # Ensure flag is cleared in case of exception before starting thread
-        stop_playback_flag.clear()
         processing_lock.release()
         collected_count = gc.collect()
         print("--- Hotkey processing finished ---")
@@ -615,8 +354,8 @@ def set_speed(icon, item):
 
 def exit_action(icon, item):
     print("Exiting application...")
-    # Stop the listener using the new module's function
     hotkey_listener.stop_listener()
+    audio_player.stop_all_playback()
     if tray_icon:
         tray_icon.stop()
 
@@ -935,33 +674,22 @@ def create_menu():
         menu_items.append(pystray.MenuItem("Speed: Error", None, enabled=False))
     # ---------------------------------------------------- #
 
-    # --- Replay Last --- #
+    # --- Replay Last (Modified to use audio_player) --- #
+    last_text = audio_player.get_last_spoken_text()
     replay_menu_text = (
-        f"Replay Last Completed ({len(last_spoken_text)} chars)"  # Clarify 'Completed'
-        if last_spoken_text
+        f"Replay Last Completed ({len(last_text)} chars)"
+        if last_text
         else "Replay Last (Nothing Completed)"
     )
 
     def replay_action_func(icon, item):
-        global stop_playback_flag  # Access flag
-        if last_spoken_text:
-            print(f"Replaying last completed segment: {last_spoken_text[:60]}...")
-            # Signal stop for any current playback first
-            stop_playback_flag.set()
-            time.sleep(0.08)
-            stop_playback_flag.clear()  # Clear before starting replay
-            # Start speak_text in a thread
-            threading.Thread(
-                target=speak_text, args=(last_spoken_text,), daemon=True
-            ).start()
+        audio_player.replay_last(kokoro_pipeline, current_voice, current_speed)
 
     menu_items.append(pystray.Menu.SEPARATOR)
     menu_items.append(
-        pystray.MenuItem(
-            replay_menu_text, replay_action_func, enabled=bool(last_spoken_text)
-        )
+        pystray.MenuItem(replay_menu_text, replay_action_func, enabled=bool(last_text))
     )
-    # ------------------- #
+    # -------------------------------------------------- #
 
     # --- Exit --- #
     menu_items.append(pystray.Menu.SEPARATOR)
