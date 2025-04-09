@@ -16,7 +16,7 @@ except Exception as e:
 def get_selected_text():
     """
     Attempts to copy selected text by simulating Ctrl+C and reading the clipboard.
-    Includes retry logic.
+    Includes retry logic and increased delays.
 
     Returns:
         str: The newly copied text if successful and different from original.
@@ -35,16 +35,20 @@ def get_selected_text():
         original_clipboard_content = ""  # Assume empty if read fails
 
     try:
-        # --- Attempt 1 ---
+        # --- Added Delay Before Simulation --- #
+        time.sleep(0.05)  # Small delay before starting simulation
+        # ------------------------------------- #
+
+        # --- Attempt 1 (with slightly increased internal delays) ---
         print("   Simulating Ctrl+C (Attempt 1 with delays)...")
         key_controller.press(keyboard.Key.ctrl)
-        time.sleep(0.03)
+        time.sleep(0.05)  # Delay after pressing Ctrl
         key_controller.press("c")
-        time.sleep(0.03)
+        time.sleep(0.05)  # Delay after pressing c
         key_controller.release("c")
-        time.sleep(0.03)  # Added small delay after release 'c' too
+        time.sleep(0.01)  # <<< Reduced delay between releasing 'c' and releasing Ctrl
         key_controller.release(keyboard.Key.ctrl)
-        time.sleep(0.1)  # Main wait for clipboard update
+        time.sleep(0.15)  # Main wait for clipboard update
 
         current_clipboard = pyperclip.paste()
 
@@ -52,9 +56,9 @@ def get_selected_text():
             print("   Got text from clipboard on Attempt 1.")
             newly_copied_text = current_clipboard
         else:
-            # --- Retry Logic ---
+            # --- Retry Logic (Add delay before re-read too) ---
             print("   Clipboard unchanged on Attempt 1. Retrying...")
-            time.sleep(0.20)  # Wait longer before retry read
+            time.sleep(0.25)  # Increased retry wait from 0.20
             # Re-read clipboard after delay
             current_clipboard = pyperclip.paste()
 

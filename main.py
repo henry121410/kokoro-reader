@@ -216,7 +216,7 @@ def process_selected_text():
 
     print("\n--- New Hotkey Trigger Detected ---")
     audio_player.stop_all_playback()
-    time.sleep(0.15)
+    time.sleep(0.2)
 
     newly_copied_text = None
     try:
