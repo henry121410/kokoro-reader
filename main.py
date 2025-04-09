@@ -15,20 +15,17 @@ from PIL import Image, ImageDraw  # For default icon
 import os  # <<< Added import os
 
 # Assuming kokoro is installed and accessible
-from kokoro.pipeline import KPipeline
-
-# from kokoro.kmodel import KModel # Original line causing error
-from kokoro import KModel  # Try importing directly from the main library
+from kokoro import KPipeline, KModel
 
 import config  # Import the new config file
 import clipboard_handler  # <<< Import the new module
+import hotkey_listener  # <<< Import the new module
 
 # --- Global Variables ---
-current_keys = set()
-processing_lock = threading.Lock()
-# key_controller = keyboard.Controller() # <<< Removed global controller
+# current_keys = set() # <<< Removed global current_keys
+processing_lock = threading.Lock()  # Keep the lock here, pass it to listener
 kokoro_pipeline = None
-keyboard_listener = None
+# keyboard_listener = None # <<< Listener object managed within hotkey_listener module now
 tray_icon = None
 # Initialize global state from config defaults
 current_lang_code = config.DEFAULT_LANG_CODE
@@ -540,84 +537,6 @@ def process_selected_text():
         print("--- Hotkey processing finished ---")
 
 
-# --- Hotkey Listener Callbacks ---
-def on_press(key):
-    """Handles key press events for hotkey detection."""
-    global current_keys
-    try:
-        # Normalize modifier keys for consistent tracking
-        normalized_key = key
-        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
-            normalized_key = keyboard.Key.ctrl
-        elif key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
-            normalized_key = keyboard.Key.shift
-        elif key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
-            normalized_key = keyboard.Key.alt
-        elif key in (keyboard.Key.cmd_l, keyboard.Key.cmd_r):
-            normalized_key = keyboard.Key.cmd
-        current_keys.add(normalized_key)
-        # print(f"DEBUG: Key pressed: {key}, Current keys: {current_keys}") # Commented out
-
-        # --- Robust Hotkey Check using Modifiers, Character, OR VK Code --- #
-        # 1. Check if all required modifiers are currently held
-        modifiers_held = config.HOTKEY_MODIFIERS.issubset(current_keys)
-
-        # 2. Check if the key JUST pressed matches either the target character OR the target VK code
-        key_char = getattr(key, "char", None)
-        key_vk = getattr(key, "vk", None)
-        is_target_key = key_char == config.HOTKEY_CHAR or key_vk == config.HOTKEY_VK
-
-        # 3. Ensure no *other* modifiers are accidentally held
-        other_modifiers_pressed = any(
-            m in current_keys
-            for m in (keyboard.Key.shift, keyboard.Key.alt, keyboard.Key.cmd)
-            if m not in config.HOTKEY_MODIFIERS
-        )
-
-        # 4. Trigger only if required modifiers are held, target key matches (char or vk), and no other modifiers are pressed
-        if modifiers_held and is_target_key and not other_modifiers_pressed:
-            # print(f"DEBUG: Hotkey trigger condition met (Modifiers: {modifiers_held}, Char: '{key_char}', VK: {key_vk})") # Commented out
-            if processing_lock.acquire(blocking=False):
-                processing_lock.release()
-                print(
-                    f"Hotkey triggered: {config.HOTKEY_MODIFIERS} + Char('{config.HOTKEY_CHAR}')/VK({config.HOTKEY_VK})"
-                )
-                process_thread = threading.Thread(
-                    target=process_selected_text, daemon=True
-                )
-                process_thread.start()
-            else:
-                print("DEBUG: Lock busy, ignoring concurrent hotkey trigger.")
-        # ------------------------------------------------------------- #
-
-    except AttributeError:
-        # getattr handles missing attributes gracefully, this might not be needed often
-        pass
-    except Exception as e:
-        print(f"Error in on_press: {e}")
-
-
-def on_release(key):
-    """Handles key release events for hotkey detection."""
-    global current_keys
-    try:
-        # Normalize modifier keys before attempting removal
-        normalized_key = key
-        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
-            normalized_key = keyboard.Key.ctrl
-        elif key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
-            normalized_key = keyboard.Key.shift
-        elif key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
-            normalized_key = keyboard.Key.alt
-        elif key in (keyboard.Key.cmd_l, keyboard.Key.cmd_r):
-            normalized_key = keyboard.Key.cmd
-        current_keys.discard(normalized_key)
-        # print(f"DEBUG: Key released: {key}, Current keys: {current_keys}") # Commented out
-
-    except Exception as e:
-        print(f"Error in on_release: {e}")
-
-
 # --- System Tray Functions ---
 def set_voice(icon, item):
     """Callback function when a voice is selected from the menu."""
@@ -695,13 +614,11 @@ def set_speed(icon, item):
 
 
 def exit_action(icon, item):
-    """Callback function when Exit is selected."""
-    print("Exit selected. Stopping services...")
-    if keyboard_listener:
-        keyboard_listener.stop()
+    print("Exiting application...")
+    # Stop the listener using the new module's function
+    hotkey_listener.stop_listener()
     if tray_icon:
         tray_icon.stop()
-    # sys.exit() # Might be too abrupt, let threads finish if possible
 
 
 # --- Test Function --- (Modified to handle interruption)
@@ -1144,20 +1061,11 @@ if __name__ == "__main__":
         # sys.exit(1) # Example: exit if initialization fails
     # ------------------------------------------------- #
 
-    # Start the keyboard listener in a separate thread
-    if kokoro_pipeline:  # Check if pipeline is valid after potential init failure
-        print(
-            f"Starting hotkey listener ({config.HOTKEY_MODIFIERS} + Char('{config.HOTKEY_CHAR}')/VK({config.HOTKEY_VK}))..."
-        )
-        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        listener.start()
-        # Update listener started message to use config
-        modifier_names = " + ".join(
-            str(k).split(".")[-1] for k in config.HOTKEY_MODIFIERS
-        )
-        print(
-            f"Listener started. Press {modifier_names} + '{config.HOTKEY_CHAR}' key after selecting text."
-        )
+    # Start the keyboard listener using the new module
+    if kokoro_pipeline:
+        # Pass only the main processing function to the listener module
+        # The lock is now handled solely within process_selected_text
+        hotkey_listener.start_listener(process_selected_text)
 
         # Setup and run the system tray icon in the main thread
         setup_tray()
