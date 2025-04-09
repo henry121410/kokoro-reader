@@ -18,7 +18,7 @@ DEFAULT_LANG_CODE = "z"  # Default language ('z' for Chinese)
 # !! 请根据你的实际路径修改下面的默认声音文件路径 !!
 # DEFAULT_VOICE = "D:/kokoro-reader/Kokoro-82M/voice/zf_001.pt"  # Old absolute path
 DEFAULT_VOICE = "./voice/zf_001.pt"  # Use relative path from project root
-DEFAULT_SPEED = 1.0  # Default playback speed
+DEFAULT_SPEED = 1.3  # Default playback speed
 
 # --- Available Options ---
 # Structure: { lang_code: { "name": lang_display_name, "voices": { voice_id: voice_path_or_desc } } }
