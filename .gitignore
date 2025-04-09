@@ -1,21 +1,35 @@
-# Python-generated files
+# Python cache
 __pycache__/
-*.py[oc]
+*.pyc
+*.pyo
+*.pyd
+
+# Generated audio files
+audio_*.wav
+
+# Log files (if you don't want to commit them)
+*.log
+
+# Virtual environment (if you use one, e.g., venv, .venv, env)
+venv/
+.venv/
+env/
+
+# IDE/Editor specific files (Optional, uncomment if needed)
+# .vscode/
+# .idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Python Egg info
+*.egg-info/
+
+# Distribution / packaging
 build/
 dist/
-wheels/
-*.egg-info
+*.egg
 
-# Virtual environments
-.venv
-
-# Large Model Data (Adjust folder name if different)
-Kokoro-82M/
-
-# Log files
-*.log
 gpu_log.csv
-
-# IDE/Editor specific
-.vscode/
-.idea/
+hello.py
