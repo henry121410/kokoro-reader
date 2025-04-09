@@ -16,8 +16,8 @@ venv/
 env/
 
 # IDE/Editor specific files (Optional, uncomment if needed)
-# .vscode/
-# .idea/
+.vscode/
+.idea/
 
 # OS generated files
 .DS_Store
