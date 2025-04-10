@@ -67,6 +67,7 @@ def _on_press(key):
         is_target_key = key_vk is not None and key_vk == config.HOTKEY_VK
 
         # --- Reinstate other_modifiers_pressed check --- #
+        # We calculate this, but we might ignore it in the final check below
         other_modifiers_pressed = any(
             m in current_keys
             for m in (
@@ -87,9 +88,13 @@ def _on_press(key):
         if key_vk == config.HOTKEY_VK:
             print(f"  [_on_press Debug] Target VK {config.HOTKEY_VK} detected!")
 
-        # --- Modified Check with other_modifiers --- #
-        if modifiers_held and is_target_key and not other_modifiers_pressed:
-            print("  [_on_press INFO] Hotkey combination DETECTED")
+        # --- Modified Check: Ignore other_modifiers for robustness --- #
+        # We trigger if the main key and required modifiers are held, regardless of other modifier keys.
+        # This makes the hotkey more resilient to temporary/incorrect OS keyboard state reports.
+        if modifiers_held and is_target_key:
+            print(
+                "  [_on_press INFO] Hotkey combination DETECTED (Ignoring other modifiers)"
+            )
             # --- Clear keys AFTER detection --- #
             print(f"  [_on_press INFO] Clearing current_keys: {current_keys}")
             current_keys.clear()
