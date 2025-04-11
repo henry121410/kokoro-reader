@@ -29,9 +29,10 @@ Thumbs.db
 build/
 dist/
 *.egg
-
+# 日志文件
 gpu_log.csv
 hello.py
 note.md
 Kokoro-82M/
 你的认知.md
+project_docs/
